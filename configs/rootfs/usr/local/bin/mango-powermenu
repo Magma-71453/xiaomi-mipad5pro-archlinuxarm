@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+"""mango-powermenu — Material 3 style session menu.
+
+Opened by the waybar power button.  Four tonal cards in a row:
+sleep / power off / reboot / Android, each asking for a second confirmation
+before the command runs.
+"""
+import os
+import subprocess
+import sys
+
+import shutil
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, Gtk  # noqa: E402
+
+# Nerd Font glyphs
+ICON_SLEEP = "\uf186"      # weather-night
+ICON_POWER = "\uf011"      # power-off
+ICON_REBOOT = "\uf021"     # refresh
+ICON_ANDROID = "\uf17b"    # android
+
+ACTIONS = [
+    ("sleep", ICON_SLEEP, "睡眠", "systemctl suspend", "确认进入睡眠？"),
+    ("poweroff", ICON_POWER, "关机", "systemctl poweroff", "确认关机？"),
+    ("reboot", ICON_REBOOT, "重启", "systemctl reboot", "确认重启？"),
+    ("android", ICON_ANDROID, "Android", "sudo -n qbootctl -s 0 && reboot", "确认切换到 Android？"),
+]
+
+CSS = b"""
+window {
+    background: transparent;
+}
+.card {
+    background-color: #F3EDF7;
+    border-radius: 28px;
+    border: 1px solid #E7E0EC;
+    padding: 22px;
+}
+.tile {
+    background-image: none;
+    background-color: #EADDFF;
+    border: none;
+    border-radius: 22px;
+    padding: 18px 10px;
+    min-width: 104px;
+    color: #1D1B20;
+}
+.tile:hover {
+    background-image: none;
+    background-color: #E3D6FF;
+}
+.tile:active {
+    background-image: none;
+    background-color: #D7C7F7;
+}
+.tile-icon {
+    font-family: "Symbols Nerd Font", "Noto Sans Symbols 2", sans-serif;
+    font-size: 30px;
+    color: #4F378B;
+}
+.tile-label {
+    font-family: "Noto Sans CJK SC", sans-serif;
+    font-size: 13px;
+    color: #1D1B20;
+    margin-top: 8px;
+}
+.title {
+    font-family: "Noto Sans CJK SC", sans-serif;
+    font-size: 17px;
+    color: #1D1B20;
+}
+.subtitle {
+    font-family: "Noto Sans CJK SC", sans-serif;
+    font-size: 13px;
+    color: #49454F;
+}
+.confirm {
+    background-image: none;
+    background-color: #B3261E;
+    color: #FFFFFF;
+    border: none;
+    border-radius: 20px;
+    padding: 10px 26px;
+    font-family: "Noto Sans CJK SC", sans-serif;
+    font-size: 14px;
+}
+.confirm:hover {
+    background-image: none;
+    background-color: #D34845;
+}
+.cancel {
+    background-image: none;
+    background-color: #E7E0EC;
+    color: #1D1B20;
+    border: none;
+    border-radius: 20px;
+    padding: 10px 26px;
+    font-family: "Noto Sans CJK SC", sans-serif;
+    font-size: 14px;
+}
+.cancel:hover {
+    background-image: none;
+    background-color: #DED8E4;
+}
+"""
+
+
+class PowerMenu(Gtk.Window):
+    def __init__(self):
+        super().__init__(type=Gtk.WindowType.TOPLEVEL)
+        self.set_decorated(False)
+        self.set_resizable(False)
+        self.set_skip_taskbar_hint(True)
+        self.set_skip_pager_hint(True)
+        self.set_keep_above(True)
+        self.set_position(Gtk.WindowPosition.CENTER_ALWAYS)
+        self.set_app_paintable(True)
+        screen = self.get_screen()
+        visual = screen.get_rgba_visual()
+        if visual:
+            self.set_visual(visual)
+
+        provider = Gtk.CssProvider()
+        provider.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_screen(
+            screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+
+        self.connect("key-press-event", self.on_key)
+        self.connect("destroy", Gtk.main_quit)
+        self.show_menu()
+
+    # -- views ------------------------------------------------------------
+    def show_menu(self):
+        self.card = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
+        self.card.get_style_context().add_class("card")
+        for key, icon, label, cmd, question in ACTIONS:
+            button = Gtk.Button()
+            button.get_style_context().add_class("tile")
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+            glyph = Gtk.Label(label=icon)
+            glyph.get_style_context().add_class("tile-icon")
+            text = Gtk.Label(label=label)
+            text.get_style_context().add_class("tile-label")
+            box.pack_start(glyph, False, False, 0)
+            box.pack_start(text, False, False, 0)
+            button.add(box)
+            button.connect(
+                "clicked", lambda _b, c=cmd, q=question, l=label: self.show_confirm(c, q, l)
+            )
+            self.card.pack_start(button, True, True, 0)
+        self.add(self.card)
+        self.show_all()
+
+    def show_confirm(self, cmd, question, label):
+        for child in self.get_children():
+            self.remove(child)
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        card.get_style_context().add_class("card")
+        title = Gtk.Label(label=question)
+        title.get_style_context().add_class("title")
+        note = label
+        if cmd.startswith("sudo -n qbootctl") and not shutil.which("qbootctl"):
+            note = "qbootctl 未安装，无法切换"
+        sub = Gtk.Label(label=note)
+        sub.get_style_context().add_class("subtitle")
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        row.set_halign(Gtk.Align.CENTER)
+        cancel = Gtk.Button(label="取消")
+        cancel.get_style_context().add_class("cancel")
+        cancel.connect("clicked", lambda _b: self.reload_menu())
+        ok = Gtk.Button(label="确认")
+        ok.get_style_context().add_class("confirm")
+        ok.connect("clicked", lambda _b, c=cmd: self.run(c))
+        row.pack_start(cancel, False, False, 0)
+        row.pack_start(ok, False, False, 0)
+        card.pack_start(title, False, False, 0)
+        card.pack_start(sub, False, False, 0)
+        card.pack_start(row, False, False, 0)
+        self.add(card)
+        self.show_all()
+
+    def reload_menu(self):
+        for child in self.get_children():
+            self.remove(child)
+        self.show_menu()
+
+    # -- actions ----------------------------------------------------------
+    def run(self, cmd):
+        try:
+            subprocess.Popen(["/bin/sh", "-c", cmd])
+        except Exception as exc:  # pragma: no cover - defensive
+            sys.stderr.write("mango-powermenu: %s\n" % exc)
+        Gtk.main_quit()
+
+    def on_key(self, _w, event):
+        if event.keyval == Gdk.KEY_Escape:
+            Gtk.main_quit()
+        return False
+
+
+def main():
+    win = PowerMenu()
+    win.show_all()
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()
