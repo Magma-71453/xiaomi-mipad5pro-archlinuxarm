@@ -24,9 +24,9 @@ ICON_REBOOT = "\uf021"     # refresh
 ICON_ANDROID = "\uf17b"    # android
 
 ACTIONS = [
-    ("sleep", ICON_SLEEP, "睡眠", "systemctl suspend", "确认进入睡眠？"),
-    ("poweroff", ICON_POWER, "关机", "systemctl poweroff", "确认关机？"),
-    ("reboot", ICON_REBOOT, "重启", "systemctl reboot", "确认重启？"),
+    ("sleep", ICON_SLEEP, "睡眠", "sudo -n systemctl suspend", "确认进入睡眠？"),
+    ("poweroff", ICON_POWER, "关机", "sudo -n systemctl poweroff", "确认关机？"),
+    ("reboot", ICON_REBOOT, "重启", "sudo -n systemctl reboot", "确认重启？"),
     ("android", ICON_ANDROID, "Android", "sudo -n /usr/local/bin/qbootctl -s 0 && reboot", "确认切换到 Android？"),
 ]
 
@@ -199,11 +199,37 @@ class PowerMenu(Gtk.Window):
 
     # -- actions ----------------------------------------------------------
     def run(self, cmd):
+        """Run it and surface any failure - a silent close looks like "no reaction"."""
         try:
-            subprocess.Popen(["/bin/sh", "-c", cmd])
+            res = subprocess.run(["/bin/sh", "-c", cmd], capture_output=True, text=True, timeout=15)
         except Exception as exc:  # pragma: no cover - defensive
-            sys.stderr.write("mango-powermenu: %s\n" % exc)
+            self.show_error(str(exc))
+            return
+        if res.returncode != 0:
+            msg = (res.stderr or res.stdout or "退出码 %d" % res.returncode).strip()
+            self.show_error(msg[:300])
+            return
         Gtk.main_quit()
+
+    def show_error(self, msg):
+        for child in self.get_children():
+            self.remove(child)
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        card.get_style_context().add_class("card")
+        title = Gtk.Label(label="执行失败")
+        title.get_style_context().add_class("title")
+        detail = Gtk.Label(label=msg)
+        detail.get_style_context().add_class("subtitle")
+        detail.set_line_wrap(True)
+        ok = Gtk.Button(label="知道了")
+        ok.get_style_context().add_class("cancel")
+        ok.set_halign(Gtk.Align.CENTER)
+        ok.connect("clicked", lambda _b: Gtk.main_quit())
+        card.pack_start(title, False, False, 0)
+        card.pack_start(detail, False, False, 0)
+        card.pack_start(ok, False, False, 0)
+        self.add(card)
+        self.show_all()
 
     def on_key(self, _w, event):
         if event.keyval == Gdk.KEY_Escape:
