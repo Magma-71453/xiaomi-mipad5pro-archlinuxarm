@@ -77,6 +77,7 @@ static struct wl_compositor *compositor;
 static struct wl_shm *shm;
 static struct wl_seat *seat;
 static struct wl_pointer *pointer;
+static struct wl_touch *touch;
 static struct wl_output *output;
 static struct zwlr_layer_shell_v1 *layer_shell;
 static struct zwlr_layer_surface_v1 *layer_surface;
@@ -1085,9 +1086,76 @@ static int inside(const struct box *b, double x, double y) {
 	return x >= b->x && x <= b->x + b->w && y >= b->y && y <= b->y + b->h;
 }
 
-static int press_idx = -1;       /* which pill/tray entry is being pressed */
-static int press_kind = 0;       /* 1 = pill, 2 = tray, 3 = arrow, 4 = status, 5 = power */
+static int press_idx = -1;
+static int press_kind = 0;
 static long long press_at = 0;
+
+static void ui_press(double x, double y) {
+	press_idx = -1;
+	press_kind = 0;
+	press_at = now_ms();
+	for (int i = 0; i < n_pill_boxes; i++)
+		if (inside(&pill_box[i], x, y)) { press_kind = 1; press_idx = i; return; }
+	for (int i = 0; i < n_tray_boxes; i++)
+		if (inside(&tray_box[i], x, y)) { press_kind = 2; press_idx = i; return; }
+	if (inside(&arrow_box, x, y)) { press_kind = 3; return; }
+	for (int i = 0; i < 3; i++)
+		if (inside(&status_icon[i], x, y)) { press_kind = 4; press_idx = i; return; }
+	if (inside(&power_box, x, y)) { press_kind = 5; return; }
+}
+
+static void ui_release(void) {
+	long long held = now_ms() - press_at;
+	int is_long = held >= LONG_PRESS_MS;
+
+	switch (press_kind) {
+	case 1: {	/* window pill: tap focuses, long press parks it on tag 9 */
+		if (press_idx < 0 || press_idx >= nclients) break;
+		if (is_long) {
+			tray_hide(press_idx);
+		} else {
+			char cmd[256];
+			snprintf(cmd, sizeof cmd,
+				 "/usr/local/bin/mango-dispatch dispatch focusid client,%d >/dev/null 2>&1",
+				 clients[press_idx].id);
+			spawn(cmd);
+		}
+		break;
+	}
+	case 2:		/* system tray icon: tap activates, long press opens its menu */
+		if (press_idx < 0 || press_idx >= nsni) break;
+		if (is_long) menu_open(press_idx);
+		else sni_activate(press_idx);
+		break;
+	case 3:		/* chevron folds / unfolds the tray */
+		tray_open = !tray_open;
+		dirty = 1;
+		repaint();
+		break;
+	case 4:		/* speaker / wifi / bluetooth */
+		spawn(press_idx == 0 ? cmd_audio : press_idx == 1 ? cmd_network : cmd_bluetooth);
+		break;
+	case 5: {	/* power: second tap within 3s powers off */
+		time_t now = time(NULL);
+		if (power_armed && now - power_armed_at <= 3) {
+			power_armed = 0;
+			dirty = 1;
+			repaint();
+			spawn("systemctl poweroff");
+			break;
+		}
+		power_armed = 1;
+		power_armed_at = now;
+		dirty = 1;
+		repaint();
+		break;
+	}
+	default:
+		break;
+	}
+	press_kind = 0;
+	press_idx = -1;
+}
 
 static void pointer_enter(void *d, struct wl_pointer *p, uint32_t serial,
 			  struct wl_surface *s, wl_fixed_t x, wl_fixed_t y) {
@@ -1110,73 +1178,45 @@ static void pointer_motion(void *d, struct wl_pointer *p, uint32_t t, wl_fixed_t
 static void pointer_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t t,
 			   uint32_t button, uint32_t state) {
 	(void)d; (void)p; (void)t; (void)button; (void)serial;
-
-	double x = pointer_x, y = pointer_y;
-
-	if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
-		press_idx = -1; press_kind = 0; press_at = now_ms();
-		for (int i = 0; i < n_pill_boxes; i++)
-			if (inside(&pill_box[i], x, y)) { press_kind = 1; press_idx = i; return; }
-		for (int i = 0; i < n_tray_boxes; i++)
-			if (inside(&tray_box[i], x, y)) { press_kind = 2; press_idx = i; return; }
-		if (inside(&arrow_box, x, y)) { press_kind = 3; return; }
-		for (int i = 0; i < 3; i++)
-			if (inside(&status_icon[i], x, y)) { press_kind = 4; press_idx = i; return; }
-		if (inside(&power_box, x, y)) { press_kind = 5; return; }
-		return;
-	}
-
-	/* release: decide short vs long press */
-	long long held = now_ms() - press_at;
-	int is_long = held >= LONG_PRESS_MS;
-
-	switch (press_kind) {
-	case 1:		/* window pill */
-		if (press_idx < 0 || press_idx >= nclients) break;
-		if (is_long) {
-			tray_hide(press_idx);
-		} else {
-			char cmd[256];
-			snprintf(cmd, sizeof cmd,
-				 "/usr/local/bin/mango-dispatch dispatch focusid client,%d >/dev/null 2>&1",
-				 clients[press_idx].id);
-			spawn(cmd);
-		}
-		break;
-	case 2:		/* system tray icon (StatusNotifierItem) */
-		if (press_idx < 0 || press_idx >= nsni) break;
-		if (is_long) menu_open(press_idx);
-		else sni_activate(press_idx);
-		break;
-	case 3:		/* chevron: collapse / expand */
-		tray_open = !tray_open;
-		dirty = 1;
-		repaint();
-		break;
-	case 4:		/* status icons */
-		spawn(press_idx == 0 ? cmd_audio : press_idx == 1 ? cmd_network : cmd_bluetooth);
-		break;
-	case 5: {	/* power */
-		time_t now = time(NULL);
-		if (power_armed && now - power_armed_at <= 3) {
-			power_armed = 0;
-			dirty = 1;
-			repaint();
-			spawn("systemctl poweroff");
-			break;
-		}
-		power_armed = 1;
-		power_armed_at = now;
-		dirty = 1;
-		repaint();
-		break;
-	}
-	default:
-		break;
-	}
-	press_kind = 0;
-	press_idx = -1;
+	if (state == WL_POINTER_BUTTON_STATE_PRESSED) ui_press(pointer_x, pointer_y);
+	else ui_release();
 }
+
+/* this tablet is a touch device: fingers arrive as wl_touch, not wl_pointer */
+static void touch_down(void *d, struct wl_touch *t, uint32_t serial, uint32_t time,
+		       struct wl_surface *surf, int32_t id, wl_fixed_t x, wl_fixed_t y) {
+	(void)d; (void)t; (void)serial; (void)time; (void)surf; (void)id;
+	pointer_x = wl_fixed_to_int(x);
+	pointer_y = wl_fixed_to_int(y);
+	ui_press(pointer_x, pointer_y);
+}
+
+static void touch_up(void *d, struct wl_touch *t, uint32_t serial, uint32_t time, int32_t id) {
+	(void)d; (void)t; (void)serial; (void)time; (void)id;
+	ui_release();
+}
+
+static void touch_motion(void *d, struct wl_touch *t, uint32_t time, int32_t id,
+			 wl_fixed_t x, wl_fixed_t y) {
+	(void)d; (void)t; (void)time; (void)id;
+	pointer_x = wl_fixed_to_int(x);
+	pointer_y = wl_fixed_to_int(y);
+}
+
+static void touch_frame(void *d, struct wl_touch *t) { (void)d; (void)t; }
+static void touch_cancel(void *d, struct wl_touch *t) { (void)d; (void)t; ui_release(); }
+static void touch_shape(void *d, struct wl_touch *t, int32_t id, wl_fixed_t a, wl_fixed_t b) {
+	(void)d; (void)t; (void)id; (void)a; (void)b;
+}
+static void touch_orientation(void *d, struct wl_touch *t, int32_t id, wl_fixed_t o) {
+	(void)d; (void)t; (void)id; (void)o;
+}
+
+static const struct wl_touch_listener touch_listener = {
+	.down = touch_down, .up = touch_up, .motion = touch_motion,
+	.frame = touch_frame, .cancel = touch_cancel,
+	.shape = touch_shape, .orientation = touch_orientation,
+};
 
 static const struct wl_pointer_listener pointer_listener = {
 	.enter = pointer_enter,
@@ -1190,6 +1230,10 @@ static void seat_capabilities(void *d, struct wl_seat *s, uint32_t caps) {
 	if ((caps & WL_SEAT_CAPABILITY_POINTER) && !pointer) {
 		pointer = wl_seat_get_pointer(s);
 		wl_pointer_add_listener(pointer, &pointer_listener, NULL);
+	}
+	if ((caps & WL_SEAT_CAPABILITY_TOUCH) && !touch) {
+		touch = wl_seat_get_touch(s);
+		wl_touch_add_listener(touch, &touch_listener, NULL);
 	}
 }
 
@@ -1287,11 +1331,13 @@ int main(int argc, char **argv) {
 
 	surface = wl_compositor_create_surface(compositor);
 	layer_surface = zwlr_layer_shell_v1_get_layer_surface(
-		layer_shell, surface, output, ZWLR_LAYER_SHELL_V1_LAYER_TOP, "mango-bar");
+		layer_shell, surface, output, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "mango-bar");
 	zwlr_layer_surface_v1_set_anchor(layer_surface,
 		ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
 		ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
 	zwlr_layer_surface_v1_set_exclusive_zone(layer_surface, BAR_H);
+	zwlr_layer_surface_v1_set_keyboard_interactivity(
+		layer_surface, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_ON_DEMAND);
 	zwlr_layer_surface_v1_set_size(layer_surface, 0, BAR_H);
 	zwlr_layer_surface_v1_add_listener(layer_surface, &layer_listener, NULL);
 	wl_surface_commit(surface);
