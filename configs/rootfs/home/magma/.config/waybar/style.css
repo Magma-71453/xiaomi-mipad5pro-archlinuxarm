@@ -26,7 +26,8 @@ window#waybar > box {
   margin: 4px 3px;
   color: #6B7280;
   /* fixed footprint so a long title cannot squeeze the clock / tray */
-  min-width: 96px;
+  min-width: 0;
+  padding: 6px 10px;
 }
 
 #taskbar button.active {

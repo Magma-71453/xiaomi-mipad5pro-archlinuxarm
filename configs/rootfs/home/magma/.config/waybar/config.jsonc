@@ -1,5 +1,6 @@
 {
   "layer": "top",
+  "fixed-center": true,
   "position": "top",
   "height": 46,
   "spacing": 6,
@@ -11,8 +12,8 @@
   "modules-right": ["tray", "pulseaudio", "network", "bluetooth", "custom/power"],
 
   "wlr/taskbar": {
-    "format": "{app_id}",
-    "icon-size": 0,
+    "format": "{icon}",
+    "icon-size": 16,
     "icon-theme": "hicolor",
     "tooltip-format": "{title}",
     "on-click": "activate",
