@@ -107,6 +107,9 @@ static int n_tray_boxes;
 static struct box arrow_box, status_box, status_icon[3], power_box;
 
 static void repaint(void);
+static void spawn(const char *cmd);
+static void sni_context(int idx);
+
 
 /* ========================================================================== *
  * StatusNotifierItem host (the real "system tray")
@@ -361,6 +364,132 @@ static void sni_activate(int idx) {
 	if (idx < 0 || idx >= nsni) return;
 	sd_bus_call_method_async(bus, NULL, snis[idx].service, snis[idx].path, SNI_IFACE,
 				 "Activate", NULL, NULL, "ii", 0, 0);
+}
+
+
+/* ========================================================================== *
+ * dbusmenu host
+ *
+ * Trays publish their menu as com.canonical.dbusmenu on their own service; the
+ * host has to fetch the layout, render it and send Event() back.  We render the
+ * top level entries with rofi (already used by the shell) and send the click.
+ * ========================================================================== */
+
+static void menu_item_collect(sd_bus_message *m, FILE *out, int depth) {
+	int32_t id = 0;
+	char label[192] = "";
+	int enabled = 1, visible = 1, separator = 0, submenu = 0;
+
+	if (sd_bus_message_enter_container(m, 'r', "(ia{sv}av)") < 0) return;
+	if (sd_bus_message_read(m, "i", &id) < 0) { sd_bus_message_exit_container(m); return; }
+
+	/* properties */
+	if (sd_bus_message_enter_container(m, 'a', "{sv}") > 0) {
+		while (sd_bus_message_enter_container(m, 'e', "sv") > 0) {
+			const char *key = NULL;
+			if (sd_bus_message_read(m, "s", &key) >= 0 && key) {
+				char type; const char *contents = NULL;
+				if (sd_bus_message_peek_type(m, &type, &contents) >= 0) {
+					if (type == 's') {
+						const char *v = NULL;
+						if (sd_bus_message_read(m, "s", &v) >= 0 && v) {
+							if (!strcmp(key, "label")) snprintf(label, sizeof label, "%s", v);
+							else if (!strcmp(key, "type")) separator = !strcmp(v, "separator");
+							else if (!strcmp(key, "children-display")) submenu = !strcmp(v, "submenu");
+						}
+					} else if (type == 'b') {
+						int v = 0;
+						if (sd_bus_message_read(m, "b", &v) >= 0) {
+							if (!strcmp(key, "enabled")) enabled = v;
+							else if (!strcmp(key, "visible")) visible = v;
+						}
+					} else {
+						sd_bus_message_skip(m, NULL);
+					}
+				}
+			}
+			sd_bus_message_exit_container(m);
+		}
+		sd_bus_message_exit_container(m);
+	}
+
+	if (out && visible && (label[0] || separator) && id != 0) {
+		/* rofi shows the label; the id rides along after a tab */
+		char clean[192];
+		snprintf(clean, sizeof clean, "%s", separator ? "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80" : label);
+		for (char *q = clean; *q; q++)
+			if (*q == '\n' || *q == '\t') *q = ' ';
+		/* strip mnemonic underscores underline markers (rare) */
+		fprintf(out, "%d\t%s%s\n", id, clean, submenu ? "  \xe2\x80\xba" : "");
+		(void)enabled;
+	}
+
+	/* children */
+	if (sd_bus_message_enter_container(m, 'a', "v") > 0) {
+		while (sd_bus_message_enter_container(m, 'v', NULL) > 0) {
+			if (depth < 1) menu_item_collect(m, out, depth + 1);
+			else sd_bus_message_skip(m, NULL);
+			sd_bus_message_exit_container(m);
+		}
+		sd_bus_message_exit_container(m);
+	}
+	sd_bus_message_exit_container(m);
+}
+
+static void menu_open(int idx) {
+	if (idx < 0 || idx >= nsni) return;
+	struct sni_item *it = &snis[idx];
+
+	sd_bus_error err = SD_BUS_ERROR_NULL;
+	char *mpath = NULL;
+	if (sd_bus_get_property_string(bus, it->service, it->path, SNI_IFACE, "Menu", &err, &mpath) < 0
+	    || !mpath || !mpath[0]) {
+		sd_bus_error_free(&err);
+		free(mpath);
+		return;
+	}
+	sd_bus_error_free(&err);
+	mpath = strdup(mpath);
+
+	/* IconMenu items have no menu object; fall back to asking for the context menu */
+	sd_bus_message *call = NULL;
+	sd_bus_message *reply = NULL;
+	err = SD_BUS_ERROR_NULL;
+	if (sd_bus_message_new_method_call(bus, &call, it->service, mpath,
+					   "com.canonical.dbusmenu", "GetLayout") < 0)
+		goto out;
+	sd_bus_message_append(call, "i", 0);
+	sd_bus_message_append(call, "i", 1);
+	sd_bus_message_open_container(call, 'a', "s");
+	sd_bus_message_close_container(call);
+	if (sd_bus_call(bus, call, 2000000, &err, &reply) < 0) {
+		sni_context(idx);   /* let the app try its own popup */
+		goto out;
+	}
+	{
+		uint32_t rev = 0;
+		sd_bus_message_read(reply, "u", &rev);
+		const char *path = "/tmp/mango-bar-menu.txt";
+		FILE *f = fopen(path, "w");
+		if (f) {
+			menu_item_collect(reply, f, 0);
+			fclose(f);
+			char cmd[1024];
+			const char *name = it->title && it->title[0] ? it->title :
+					   (it->id ? it->id : "tray");
+			snprintf(cmd, sizeof cmd,
+				 "rofi -dmenu -i -no-custom -p '%s' < %s | { IFS= read -r l; "
+				 "id=$(printf '%%s' \"$l\" | cut -f1); "
+				 "[ -n \"$id\" ] && /usr/local/bin/mango-bar --menu-event '%s' '%s' \"$id\"; }",
+				 name, path, it->service ? it->service : "", mpath);
+			spawn(cmd);
+		}
+	}
+out:
+	if (reply) sd_bus_message_unref(reply);
+	if (call) sd_bus_message_unref(call);
+	sd_bus_error_free(&err);
+	free(mpath);
 }
 
 static void sni_context(int idx) {
@@ -1016,7 +1145,7 @@ static void pointer_button(void *d, struct wl_pointer *p, uint32_t serial, uint3
 		break;
 	case 2:		/* system tray icon (StatusNotifierItem) */
 		if (press_idx < 0 || press_idx >= nsni) break;
-		if (is_long) sni_context(press_idx);
+		if (is_long) menu_open(press_idx);
 		else sni_activate(press_idx);
 		break;
 	case 3:		/* chevron: collapse / expand */
@@ -1120,6 +1249,22 @@ int main(int argc, char **argv) {
 		return 0;
 	}
 
+	if (argc == 5 && !strcmp(argv[1], "--menu-event")) {
+		if (sd_bus_default_user(&bus) < 0) return 1;
+		sd_bus_message *m = NULL;
+		if (sd_bus_message_new_method_call(bus, &m, argv[2], argv[3],
+						   "com.canonical.dbusmenu", "Event") < 0)
+			return 1;
+		sd_bus_message_append(m, "is", (int32_t)atoi(argv[4]), "clicked");
+		sd_bus_message_open_container(m, 'v', "i");
+		sd_bus_message_append(m, "i", 0);
+		sd_bus_message_close_container(m);
+		sd_bus_message_append(m, "u", (uint32_t)0);
+		sd_bus_send(bus, m, NULL);
+		sd_bus_flush(bus);
+		sd_bus_message_unref(m);
+		return 0;
+	}
 	load_actions();
 	if (sni_bus_init() < 0)
 		fprintf(stderr, "mango-bar: StatusNotifierWatcher unavailable\n");
