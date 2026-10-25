@@ -37,31 +37,31 @@
   "pulseaudio": {
     "format": "{icon}",
     "format-muted": "{icon}",
-    "format-icons": { "default": ["🔈", "🔉", "🔊"] },
+    "format-icons": { "default": ["\uf026", "\uf027", "\uf028"] },
     "on-click": "kitty -1 -e alsamixer",
     "tooltip-format": "音量 {volume}%"
   },
 
   "network": {
-    "format-wifi": "📶",
-    "format-ethernet": "🌐",
-    "format-disconnected": "📵",
+    "format-wifi": "\uf1eb",
+    "format-ethernet": "\uf0ac",
+    "format-disconnected": "\uf00d",
     "interval": 30,
     "tooltip-format-wifi": "{essid} {signalStrength}%",
     "on-click": "kitty -1 -e nmtui"
   },
 
   "bluetooth": {
-    "format": "ᛒ",
-    "format-disabled": "ᛒ",
-    "format-connected": "ᛒ",
+    "format": "\uf293",
+    "format-disabled": "\uf293",
+    "format-connected": "\uf293",
     "interval": 30,
     "tooltip-format": "{controller_alias}",
     "on-click": "kitty -1 -e bluetoothctl"
   },
 
   "custom/power": {
-    "format": "⏻",
+    "format": "\uf011",
     "tooltip": false,
     "on-click": "systemctl poweroff"
   }
