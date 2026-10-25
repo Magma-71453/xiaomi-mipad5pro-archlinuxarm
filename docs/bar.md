@@ -70,3 +70,39 @@ font-family: "Noto Sans CJK SC", "Symbols Nerd Font", "Noto Sans Symbols 2", san
 `configs/mango-shell/mango-bar.c` 是自己写的 layer-shell + cairo 状态栏（含 SNI + dbusmenu 宿主）。
 它在 mango 上收不到任何输入事件（layer 表面与 xdg_toplevel 都试过，pointer/touch 均为 0），
 因此归档不用；实现与 bug 记录保留备查。
+
+## 电源菜单（mango-powermenu）
+
+waybar 最右侧电源键 (`custom/power`) 唤起一个 Material 3 风格的 GTK3 弹窗：
+
+```
+┌─────────────────────────────────────────┐
+│  (🌙)      (⏻)      (↻)      (🤖)     │
+│  睡眠      关机      重启     Android   │
+└─────────────────────────────────────────┘
+```
+
+每个方块点下去都会切换到**二次确认**视图（红色 filled「确认」/ 浅灰「取消」），确认后才执行：
+
+| 项 | 命令 |
+|---|---|
+| 睡眠 | `systemctl suspend` |
+| 关机 | `systemctl poweroff` |
+| 重启 | `systemctl reboot` |
+| Android | `sudo -n /usr/local/bin/qbootctl -s 0 && reboot`（切到 slot `_a`） |
+
+### qbootctl
+
+切换 A/B slot 需要 `qbootctl`（上游在 GitLab，被 Cloudflare 挡住普通 curl，因此用官方 GitHub 镜像 `linux-msm/qbootctl`）：
+
+```sh
+sh scripts/build-qbootctl.sh
+```
+
+验证（只读）：
+
+```sh
+sudo qbootctl -x 0     # -> _a  (Android)
+sudo qbootctl -x 1     # -> _b  (Linux)
+sudo qbootctl          # 当前 slot 与两个 slot 的 active/successful/bootable
+```

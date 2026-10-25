@@ -27,7 +27,7 @@ ACTIONS = [
     ("sleep", ICON_SLEEP, "睡眠", "systemctl suspend", "确认进入睡眠？"),
     ("poweroff", ICON_POWER, "关机", "systemctl poweroff", "确认关机？"),
     ("reboot", ICON_REBOOT, "重启", "systemctl reboot", "确认重启？"),
-    ("android", ICON_ANDROID, "Android", "sudo -n qbootctl -s 0 && reboot", "确认切换到 Android？"),
+    ("android", ICON_ANDROID, "Android", "sudo -n /usr/local/bin/qbootctl -s 0 && reboot", "确认切换到 Android？"),
 ]
 
 CSS = b"""
@@ -164,7 +164,7 @@ class PowerMenu(Gtk.Window):
         title = Gtk.Label(label=question)
         title.get_style_context().add_class("title")
         note = label
-        if cmd.startswith("sudo -n qbootctl") and not shutil.which("qbootctl"):
+        if "qbootctl" in cmd and not shutil.which("qbootctl"):
             note = "qbootctl 未安装，无法切换"
         sub = Gtk.Label(label=note)
         sub.get_style_context().add_class("subtitle")
