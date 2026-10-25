@@ -31,6 +31,7 @@
 #include <unistd.h>
 #include <wayland-client.h>
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
+#include "xdg-shell-client-protocol.h"
 
 #define BAR_H        54
 #define EDGE         8
@@ -80,6 +81,9 @@ static struct wl_pointer *pointer;
 static struct wl_touch *touch;
 static struct wl_output *output;
 static struct zwlr_layer_shell_v1 *layer_shell;
+static struct xdg_wm_base *wm_base;
+static struct xdg_surface *xdg_surf;
+static struct xdg_toplevel *toplevel;
 static struct zwlr_layer_surface_v1 *layer_surface;
 static struct wl_surface *surface;
 
@@ -108,6 +112,36 @@ static int n_tray_boxes;
 static struct box arrow_box, status_box, status_icon[3], power_box;
 
 static void repaint(void);
+
+static void wm_ping(void *d, struct xdg_wm_base *b, uint32_t serial) {
+	(void)d;
+	xdg_wm_base_pong(b, serial);
+}
+static const struct xdg_wm_base_listener wm_base_listener = { .ping = wm_ping };
+
+static void xdg_surf_configure(void *d, struct xdg_surface *s, uint32_t serial) {
+	(void)d;
+	xdg_surface_ack_configure(s, serial);
+	buf_w = bar_w * scale;
+	buf_h = BAR_H * scale;
+	dirty = 1;
+	repaint();
+}
+static const struct xdg_surface_listener xdg_surface_listener = {
+	.configure = xdg_surf_configure,
+};
+
+static void toplevel_configure(void *d, struct xdg_toplevel *t, int32_t w, int32_t h,
+			       struct wl_array *states) {
+	(void)d; (void)t; (void)w; (void)h; (void)states;
+}
+static void toplevel_close(void *d, struct xdg_toplevel *t) { (void)d; (void)t; exit(0); }
+static const struct xdg_toplevel_listener toplevel_listener = {
+	.configure = toplevel_configure,
+	.close = toplevel_close,
+};
+
+
 static void spawn(const char *cmd);
 static void sni_context(int idx);
 
@@ -628,7 +662,7 @@ static void refresh_clients(void) {
 		int parked = 0;
 		for (int t = 0; t < ntray; t++)
 			if (tray[t].id == c.id) parked = 1;
-		if (c.visible && !parked) got[n++] = c;
+		if (c.visible && !parked && strcmp(c.appid, "mango-bar")) got[n++] = c;
 		p += 6;
 	}
 
@@ -1091,6 +1125,7 @@ static int press_kind = 0;
 static long long press_at = 0;
 
 static void ui_press(double x, double y) {
+	fprintf(stderr, "MBDBG press %.0f,%.0f\n", x, y);
 	press_idx = -1;
 	press_kind = 0;
 	press_at = now_ms();
@@ -1188,6 +1223,7 @@ static void touch_down(void *d, struct wl_touch *t, uint32_t serial, uint32_t ti
 	(void)d; (void)t; (void)serial; (void)time; (void)surf; (void)id;
 	pointer_x = wl_fixed_to_int(x);
 	pointer_y = wl_fixed_to_int(y);
+	fprintf(stderr, "MBDBG touch %d,%d\n", pointer_x, pointer_y);
 	ui_press(pointer_x, pointer_y);
 }
 
@@ -1269,6 +1305,10 @@ static void registry_global(void *data, struct wl_registry *reg, uint32_t name,
 		seat = wl_registry_bind(reg, name, &wl_seat_interface, 7);
 	else if (!strcmp(iface, wl_output_interface.name))
 		output = wl_registry_bind(reg, name, &wl_output_interface, 2);
+	else if (!strcmp(iface, xdg_wm_base_interface.name)) {
+		wm_base = wl_registry_bind(reg, name, &xdg_wm_base_interface, 1);
+		xdg_wm_base_add_listener(wm_base, &wm_base_listener, NULL);
+	}
 	else if (!strcmp(iface, zwlr_layer_shell_v1_interface.name))
 		layer_shell = wl_registry_bind(reg, name, &zwlr_layer_shell_v1_interface, 1);
 }
@@ -1330,16 +1370,16 @@ int main(int argc, char **argv) {
 	wl_display_roundtrip(display);
 
 	surface = wl_compositor_create_surface(compositor);
-	layer_surface = zwlr_layer_shell_v1_get_layer_surface(
-		layer_shell, surface, output, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "mango-bar");
-	zwlr_layer_surface_v1_set_anchor(layer_surface,
-		ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
-		ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
-	zwlr_layer_surface_v1_set_exclusive_zone(layer_surface, BAR_H);
-	zwlr_layer_surface_v1_set_keyboard_interactivity(
-		layer_surface, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_ON_DEMAND);
-	zwlr_layer_surface_v1_set_size(layer_surface, 0, BAR_H);
-	zwlr_layer_surface_v1_add_listener(layer_surface, &layer_listener, NULL);
+	if (!wm_base) {
+		fprintf(stderr, "mango-bar: no xdg_wm_base\n");
+		return 1;
+	}
+	xdg_surf = xdg_wm_base_get_xdg_surface(wm_base, surface);
+	xdg_surface_add_listener(xdg_surf, &xdg_surface_listener, NULL);
+	toplevel = xdg_surface_get_toplevel(xdg_surf);
+	xdg_toplevel_add_listener(toplevel, &toplevel_listener, NULL);
+	xdg_toplevel_set_title(toplevel, "mango-bar");
+	xdg_toplevel_set_app_id(toplevel, "mango-bar");
 	wl_surface_commit(surface);
 	wl_display_roundtrip(display);
 
