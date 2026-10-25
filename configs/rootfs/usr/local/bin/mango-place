@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""mango-place — give every new floating window a comfortable size and centre it.
+
+The macOS-style decoration bars are gone; what is left here is only the
+placement policy: new windows open at 11/16 x 7/10 of the screen, centred.
+"""
+import json
+import os
+import socket
+import time
+
+TARGET_W_RATIO = 11 / 16
+TARGET_H_RATIO = 7 / 10
+
+
+def rt():
+    env = os.environ.get("XDG_RUNTIME_DIR")
+    if env and os.path.isdir(env):
+        try:
+            if any(n.startswith("wayland-") for n in os.listdir(env)):
+                return env
+        except OSError:
+            pass
+    return os.path.expanduser("~/.xdg")
+
+
+def mango_socket():
+    sig = os.environ.get("MANGO_INSTANCE_SIGNATURE")
+    if sig and os.path.exists(sig):
+        return sig
+    for n in sorted(os.listdir(rt())):
+        if n.startswith("mango-") and n.endswith(".sock"):
+            p = os.path.join(rt(), n)
+            if ipc(p, "get version"):
+                return p
+    return None
+
+
+def ipc(path, command, timeout=0.4):
+    if not path:
+        return None
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        s.connect(path)
+        s.sendall((command + "\n").encode())
+        data = b""
+        while True:
+            c = s.recv(65536)
+            if not c:
+                break
+            data += c
+            if data.endswith(b"}"):
+                break
+        return data
+    except OSError:
+        return None
+    finally:
+        s.close()
+
+
+def main():
+    sock = None
+    seen = {}          # id -> phase (1 = resized, 2 = centred)
+    cascade = 0
+    screen = (1280, 800)
+    while True:
+        if not sock or not os.path.exists(sock):
+            sock = mango_socket()
+        raw = ipc(sock, "get all-clients")
+        clients = []
+        if raw:
+            try:
+                clients = json.loads(raw).get("clients", [])
+            except ValueError:
+                clients = []
+        mon = ipc(sock, "get all-monitors")
+        if mon:
+            try:
+                m = json.loads(mon)["monitors"][0]
+                screen = (m.get("width", 1280), m.get("height", 800))
+            except (ValueError, KeyError, IndexError):
+                pass
+
+        alive = set()
+        for c in clients:
+            cid = c.get("id")
+            if cid is None:
+                continue
+            alive.add(cid)
+            if not c.get("is_floating") or not c.get("is_visible"):
+                continue
+            phase = seen.get(cid, 0)
+            if phase == 0:
+                tw = int(screen[0] * TARGET_W_RATIO)
+                th = int(screen[1] * TARGET_H_RATIO)
+                dw, dh = tw - c.get("width", tw), th - c.get("height", th)
+                if abs(dw) > 8 or abs(dh) > 8:
+                    ipc(sock, "dispatch resizewin,%+d,%+d client,%d" % (dw, dh, cid))
+                seen[cid] = 1
+            elif phase == 1:
+                # centre + cascade so windows do not stack on top of each other
+                off = (cascade % 6) * 26
+                tx = (screen[0] - c.get("width", 0)) // 2 + off
+                ty = (screen[1] - c.get("height", 0)) // 2 + off
+                dx, dy = tx - c.get("x", 0), ty - c.get("y", 0)
+                if abs(dx) > 4 or abs(dy) > 4:
+                    ipc(sock, "dispatch movewin,%+d,%+d client,%d" % (dx, dy, cid))
+                cascade += 1
+                seen[cid] = 2
+        for cid in list(seen):
+            if cid not in alive:
+                seen.pop(cid, None)
+        time.sleep(0.25)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,13 @@
+[Unit]
+Description=Give wlp1s0 a usable MAC address (WCN6855 reports 00:00:00:00:00:00)
+Documentation=bug.md B-033
+After=sysinit.target
+Before=NetworkManager.service wpa_supplicant.service network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/sh -c 'i=0; while [ $i -lt 50 ] && [ ! -e /sys/class/net/wlp1s0 ]; do i=$((i+1)); sleep 0.2; done; cur=$(cat /sys/class/net/wlp1s0/address 2>/dev/null); if [ "$cur" = "00:00:00:00:00:00" ] || [ -z "$cur" ]; then /usr/bin/ip link set dev wlp1s0 address 02:00:00:12:34:56 && /usr/bin/ip link set dev wlp1s0 up; fi'
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,16 @@
+#!/bin/sh
+# mango-run — run a command with MANGO_INSTANCE_SIGNATURE pointing at the live
+# mango instance (skips stale sockets left by previous sessions).
+#   mango-run mangobar
+[ $# -ge 1 ] || { echo "usage: mango-run CMD [ARGS...]" >&2; exit 2; }
+for rt in "$HOME/.xdg" "${XDG_RUNTIME_DIR:-}"; do
+	[ -n "$rt" ] && [ -d "$rt" ] || continue
+	for s in "$rt"/mango-*.sock; do
+		[ -S "$s" ] || continue
+		MANGO_INSTANCE_SIGNATURE="$s" mmsg get version >/dev/null 2>&1 || continue
+		export MANGO_INSTANCE_SIGNATURE="$s"
+		exec "$@"
+	done
+done
+echo "mango-run: no live mango instance found" >&2
+exit 1

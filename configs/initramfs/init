@@ -1,0 +1,309 @@
+#!/bin/busybox sh
+# elish initramfs PID 1.
+#
+# Mounts the root filesystem identified by PARTNAME=<label> (the deviceinfo
+# rootfs partition is "linux") and hands over to /sbin/init. No udev/systemd in
+# the initramfs: devtmpfs plus a sysfs PARTNAME scan is enough.
+#
+# Root filesystem probe order (decisions.md D-010): f2fs first, ext4 as the
+# fallback. Every attempt is logged so a failed boot is diagnosable from the
+# console alone.
+#
+# POSIX sh on purpose (no "local" keyword): the host shell can drive this file
+# with mocked mount(8)/switch_root(8), which is what build-initramfs.sh --test
+# does. All knobs are INIT_* env vars.
+
+set -u
+
+PARTLABEL=${INIT_PARTLABEL:-linux}
+DEVDIR=${INIT_DEVDIR:-/dev}
+SYSFSDIR=${INIT_SYSFSDIR:-/sys}
+NEWROOT=${INIT_NEWROOT:-/newroot}
+WAIT_TIMEOUT=${INIT_TIMEOUT:-30}
+FS_TYPES=${INIT_FS_TYPES:-f2fs ext4}
+RESCUE=${INIT_RESCUE:-0}
+SKIP_BASE_MOUNTS=${INIT_SKIP_BASE_MOUNTS:-0}
+MODDIR=${INIT_MODDIR:-/lib/modules}
+DIAG=0
+NETDBG=0
+USBNET=0
+
+ROOT_DEV=
+MOUNTED_FS=
+
+log() {
+    printf 'elish-init: %s\n' "$*" >&2
+    if [ -w /dev/kmsg ]; then
+        printf '<6>elish-init: %s\n' "$*" > /dev/kmsg 2>/dev/null || true
+    fi
+    return 0
+}
+
+fail() {
+    log "FATAL: $*"
+    if [ "$RESCUE" = "1" ]; then
+        log "dropping to rescue shell"
+        exec /bin/sh
+    fi
+    log "INIT_RESCUE=0, no rescue shell; halting"
+    exit 1
+}
+
+partnode() {
+    printf '%s/disk/by-partlabel/%s' "$DEVDIR" "$PARTLABEL"
+}
+
+# devtmpfs creates /dev/<kernelname>, but nothing creates /dev/disk/by-partlabel
+# without udev/mdev. Rebuild that single symlink from the sysfs PARTNAME value.
+resolve_partlabel() {
+    [ -e "$(partnode)" ] && return 0
+    [ -d "$SYSFSDIR/class/block" ] || return 1
+    found=
+    for scan_entry in "$SYSFSDIR"/class/block/*; do
+        [ -e "$scan_entry/uevent" ] || continue
+        if grep -qx "PARTNAME=$PARTLABEL" "$scan_entry/uevent" 2>/dev/null; then
+            found=${scan_entry##*/}
+            break
+        fi
+    done
+    [ -n "$found" ] || return 1
+    mkdir -p "$DEVDIR/disk/by-partlabel" || return 1
+    ln -sfn "../../$found" "$(partnode)" || return 1
+    log "resolved PARTNAME=$PARTLABEL to $DEVDIR/$found via $SYSFSDIR/class/block"
+    return 0
+}
+
+# Load any .ko shipped in the initramfs. Failure is never fatal: when f2fs/ext4
+# are built into the kernel (CONFIG_F2FS_FS=y) insmod simply reports that the
+# module is already loaded / not loadable, which is exactly what we want.
+load_modules() {
+    [ -d "$MODDIR" ] || return 0
+    command -v insmod >/dev/null 2>&1 || { log "insmod unavailable, skipping module load"; return 0; }
+    mod_list=
+    if [ -f "$MODDIR/modules.dep" ]; then
+        mod_list=$(sed -e 's/:.*//' "$MODDIR/modules.dep" | grep -v '^$' || true)
+    else
+        mod_list=$(find "$MODDIR" -name '*.ko*' 2>/dev/null || true)
+    fi
+    [ -n "$mod_list" ] || return 0
+    for mod_rel in $mod_list; do
+        case $mod_rel in /*) mod_path=$mod_rel ;; *) mod_path=$MODDIR/$mod_rel ;; esac
+        [ -f "$mod_path" ] || continue
+        if insmod "$mod_path" 2>/dev/null; then
+            log "insmod ok: $mod_path"
+        else
+            log "insmod skipped: $mod_path (already builtin or not loadable; continuing)"
+        fi
+    done
+    return 0
+}
+
+base_mounts() {
+    if [ "$SKIP_BASE_MOUNTS" = "1" ]; then
+        log "base mounts skipped (INIT_SKIP_BASE_MOUNTS=1)"
+        return 0
+    fi
+    mkdir -p /proc /sys /dev
+    grep -q ' /proc ' /proc/mounts 2>/dev/null || mount -t proc proc /proc 2>/dev/null || log "warn: proc mount failed"
+    grep -q ' /sys ' /proc/mounts 2>/dev/null || mount -t sysfs sysfs /sys 2>/dev/null || log "warn: sysfs mount failed"
+    grep -q ' /dev ' /proc/mounts 2>/dev/null || mount -t devtmpfs devtmpfs /dev 2>/dev/null || log "warn: devtmpfs mount failed"
+    mkdir -p "$DEVDIR/disk"
+    return 0
+}
+
+wait_for_root_device() {
+    ROOT_DEV=$(partnode)
+    waited=0
+    while [ ! -e "$ROOT_DEV" ]; do
+        resolve_partlabel || true
+        [ -e "$ROOT_DEV" ] && break
+        if [ "$waited" -ge "$WAIT_TIMEOUT" ]; then
+            log "timeout after ${WAIT_TIMEOUT}s waiting for $ROOT_DEV"
+            return 1
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    log "found root device $ROOT_DEV after ${waited}s"
+    return 0
+}
+
+mount_root() {
+    mount_src=$1
+    mkdir -p "$NEWROOT"
+    log "root probe order: $FS_TYPES"
+    for fs in $FS_TYPES; do
+        log "trying $fs: mount -t $fs -o ro $mount_src $NEWROOT"
+        if mount -t "$fs" -o ro "$mount_src" "$NEWROOT" 2>/dev/null; then
+            log "root mounted read-only as $fs"
+            MOUNTED_FS=$fs
+            return 0
+        fi
+        log "mount -t $fs failed"
+        umount "$NEWROOT" 2>/dev/null || true
+    done
+    return 1
+}
+
+# Grow the f2fs root filesystem to the size of its partition before mounting.
+# The image is built small on purpose (the host must not create a 195 GiB file),
+# so the first boot has to expand it.  resize.f2fs must run offline, which is
+# exactly where we are: the root fs is not mounted yet.
+maybe_resize_root() {
+    _dev=$1
+    _log=/tmp/resize.log
+    : > "$_log"
+    if [ ! -x /usr/bin/resize.f2fs ]; then
+        log "resize: resize.f2fs missing from initramfs, skipping"
+        echo "resize.f2fs missing" >> "$_log"
+        return 0
+    fi
+    _fsb=$(od -An -tu8 -j1060 -N8 "$_dev" 2>>"$_log" | tr -d ' \n')
+    _name=$(basename "$(readlink -f "$_dev" 2>>"$_log")")
+    _secs=$(cat "/sys/class/block/$_name/size" 2>>"$_log")
+    echo "dev=$_dev name=$_name fs_blocks=$_fsb part_sectors=$_secs" >> "$_log"
+    if [ -z "$_fsb" ] || [ -z "$_secs" ]; then
+        log "resize: cannot read sizes, skipping"
+        return 0
+    fi
+    _pb=$((_secs / 8))
+    echo "partition_blocks=$_pb" >> "$_log"
+    if [ "$_fsb" -ge "$_pb" ]; then
+        log "resize: filesystem already fills the partition"
+        return 0
+    fi
+    log "resize: growing f2fs from $_fsb to $_pb blocks"
+    {
+        echo "=== fsck.f2fs -fp ==="
+        printf 'y\n' | LD_LIBRARY_PATH=/usr/lib /usr/bin/fsck.f2fs -fp "$_dev" 2>&1
+        echo "=== resize.f2fs -f -F ==="
+        printf 'y\n' | LD_LIBRARY_PATH=/usr/lib /usr/bin/resize.f2fs -f -F "$_dev" 2>&1
+        echo "resize_rc=$?"
+    } >> "$_log" 2>&1
+    sync
+    log "resize: done (log kept at /var/log/resize.log)"
+    return 0
+}
+
+setup_usb_net() {
+    M=/lib/modules/elish
+    # order matters: usb_f_acm needs u_serial, usb_f_ecm needs u_ether; both need libcomposite
+    for _m in libcomposite u_serial u_ether usb_f_acm usb_f_ecm; do
+        if [ -f "$M/$_m.ko" ]; then insmod "$M/$_m.ko"; log "net: insmod $_m"; fi
+    done
+    mkdir -p /sys/kernel/config
+    mount -t configfs configfs /sys/kernel/config 2>/dev/null || true
+    G=/sys/kernel/config/usb_gadget/g1
+    mkdir -p "$G"
+    echo 0x1d6b > "$G/idVendor"
+    echo 0x0104 > "$G/idProduct"
+    echo 0x0100 > "$G/bcdDevice"
+    echo 0x0200 > "$G/bcdUSB"
+    mkdir -p "$G/strings/0x409"
+    echo elish > "$G/strings/0x409/serialnumber"
+    echo elish > "$G/strings/0x409/product"
+    echo postmarketOS > "$G/strings/0x409/manufacturer"
+    mkdir -p "$G/configs/c.1/strings/0x409"
+    echo ecm > "$G/configs/c.1/strings/0x409/configuration"
+    # USB serial (ACM): gives the host /dev/ttyACM0 even when networking is broken
+    mkdir -p "$G/functions/acm.usb0" 2>/dev/null || true
+    ln -sf "$G/functions/acm.usb0" "$G/configs/c.1/" 2>/dev/null || true
+    mkdir -p "$G/functions/ecm.usb0"
+    ln -sf "$G/functions/ecm.usb0" "$G/configs/c.1/" 2>/dev/null || true
+    _udc=$(ls /sys/class/udc 2>/dev/null | head -1)
+    if [ -n "$_udc" ]; then echo "$_udc" > "$G/UDC"; log "net: bound UDC $_udc"; else log "net: no UDC found"; fi
+    ip link set usb0 up 2>/dev/null || log "net: usb0 up failed"
+    ip addr add 10.11.12.2/24 dev usb0 2>/dev/null || log "net: addr add failed"
+    mkdir -p /dev/pts
+    mount -t devpts devpts /dev/pts 2>/dev/null || true
+    # Write diagnostics where httpd can serve them, and expose a tiny CGI
+    # command channel (busybox httpd runs CGI in this initramfs root, so the
+    # script can chroot into the real root itself).
+    WWW=/tmp/usbwww
+    mkdir -p "$WWW/cgi-bin"
+    dmesg > "$WWW/dmesg.txt" 2>/dev/null || true
+    printf '%s\n' '#!/bin/sh' 'echo "Content-Type: text/plain"' 'echo' 'sh -c "$QUERY_STRING" 2>&1' > "$WWW/cgi-bin/cmd"
+    chmod 755 "$WWW/cgi-bin/cmd"
+    httpd -p 80 -h "$WWW" 2>/dev/null
+    log "net: httpd on tcp/80 (docroot=/tmp/usbwww, /cgi-bin/cmd?<cmd>)"
+    log "net: usb0=10.11.12.2/24 telnetd=23"
+}
+
+switch_to_root() {
+    mkdir -p "$NEWROOT/dev" "$NEWROOT/proc" "$NEWROOT/sys" "$NEWROOT/run" "$NEWROOT/tmp"
+    if [ ! -x "$NEWROOT/sbin/init" ]; then
+        fail "no executable $NEWROOT/sbin/init in the mounted rootfs"
+    fi
+    # The root was mounted read-only for probing; the kernel cmdline says rw and
+    # systemd (PID 1) needs a writable root for /var, /etc and friends.
+    if mount -o remount,rw "$NEWROOT" 2>/dev/null; then
+        log "root remounted read-write"
+    else
+        log "warn: remount rw failed, continuing read-only"
+    fi
+    # Carry the pseudo filesystems into the new root: they were mounted over the
+    # initramfs tree, so switch_root would otherwise present empty directories.
+    case "$(cat /proc/cmdline 2>/dev/null)" in
+        *elish.fixroot=1*)
+            mkdir -p "$NEWROOT/etc/systemd/system/sockets.target.wants" "$NEWROOT/etc/systemd/system/getty.target.wants"
+            ln -sfn ../../../usr/lib/systemd/system/dbus.socket "$NEWROOT/etc/systemd/system/sockets.target.wants/dbus.socket"
+            ln -sfn ../../../usr/lib/systemd/system/serial-getty@.service "$NEWROOT/etc/systemd/system/getty.target.wants/serial-getty@ttyGS0.service"
+            sync
+            log "fixroot: dbus.socket + serial-getty@ttyGS0 enabled in the rootfs"
+            ;;
+    esac
+    if [ "$USBNET" = "1" ]; then setup_usb_net; fi
+    if [ "$NETDBG" = "1" ]; then
+        setup_usb_net
+        log "net debug ready: host ip 10.11.12.1/24 then telnet 10.11.12.2"
+        exec /bin/sh
+    fi
+    for _d in dev proc sys run; do
+        if grep -q " /$_d " /proc/mounts 2>/dev/null; then
+            mount --move "/$_d" "$NEWROOT/$_d" 2>/dev/null                 && log "moved /$_d into new root"                 || log "warn: move /$_d failed"
+        fi
+    done
+    if [ ! -e "$NEWROOT/dev/console" ] && command -v mknod >/dev/null 2>&1; then
+        mknod "$NEWROOT/dev/console" c 5 1 2>/dev/null && log "created /dev/console"
+    fi
+    # In-situ diagnostic: can the target userspace execute its own systemd?
+    # Runs natively (no emulation) and prints the version or the loader error.
+    if [ -x "$NEWROOT/usr/lib/systemd/systemd" ]; then
+        _sv=$(chroot "$NEWROOT" /usr/lib/systemd/systemd --version 2>&1 | head -1)
+        log "diag: systemd --version => ${_sv:-<no output>}"
+    else
+        log "diag: $NEWROOT/usr/lib/systemd/systemd missing or not executable"
+    fi
+    if [ "$DIAG" = "1" ]; then
+        P() { _o=$(chroot "$NEWROOT" "$@" 2>&1); _r=$?; if [ "$_r" = "0" ]; then echo ok; else echo FAIL; fi; }
+        V1="sh=$(P /bin/sh -c true) cat=$(P /bin/cat /etc/hostname) ls=$(P /usr/bin/ls /) bash=$(P /usr/bin/bash --version)"
+        V2="openssl=$(P /usr/bin/openssl version) xz=$(P /usr/bin/xz --version) zstd=$(P /usr/bin/zstd --version)"
+        V3="python=$(P /usr/bin/python3 --version) pacman=$(P /usr/bin/pacman --version) kmod=$(P /usr/bin/kmod --version) systemd=$(P /usr/lib/systemd/systemd --version)"
+        log "diag: V1 $V1"
+        log "diag: V2 $V2"
+        log "diag: V3 $V3"
+        log "diag: KMSG $(dmesg 2>/dev/null | grep -a -A2 'fatal signal' | tr '\n' '|' | cut -c1-300)"
+        log "diag: halting for inspection (power-cycle to recover)"
+        while true; do sleep 3600; done
+    fi
+    log "switch_root $NEWROOT /sbin/init"
+    exec switch_root "$NEWROOT" /sbin/init
+}
+
+main() {
+    log "starting (partlabel=$PARTLABEL timeout=${WAIT_TIMEOUT}s fs order=[$FS_TYPES])"
+    base_mounts
+    case "$(cat /proc/cmdline 2>/dev/null)" in *elish.net=1*) NETDBG=1; log "usb-net debug requested" ;; esac
+    case "$(cat /proc/cmdline 2>/dev/null)" in *elish.usbnet=1*) USBNET=1; log "usb-net requested (persist through switch_root)" ;; esac
+    case "$(cat /proc/cmdline 2>/dev/null)" in *elish.diag=1*) DIAG=1; log "diag mode requested" ;; esac
+    load_modules
+    wait_for_root_device || fail "no root device at $(partnode) (tried: $FS_TYPES)"
+    log "using $ROOT_DEV"
+    case "$(cat /proc/cmdline 2>/dev/null)" in *elish.noresize=1*) log "resize: disabled by cmdline" ;; *) maybe_resize_root "$ROOT_DEV" ;; esac
+    mount_root "$ROOT_DEV" || fail "cannot mount root from $ROOT_DEV (tried: $FS_TYPES)"
+    log "root fs=$MOUNTED_FS"
+    if [ -f /tmp/resize.log ]; then mkdir -p "$NEWROOT/var/log" 2>/dev/null; cat /tmp/resize.log >> "$NEWROOT/var/log/resize.log" 2>/dev/null || true; fi
+    switch_to_root
+}
+
+main "$@"

@@ -1,0 +1,61 @@
+#!/bin/sh
+# elish fast-charge supervisor.
+#
+# The bq2597x charge pump only becomes useful once USB PD settles on the 9 V
+# PDO: a 2:1 divider wants VBUS ~= 2*VBAT, which 9 V satisfies up to ~4.2 V of
+# battery.  Enabling it takes the battery from ~0.7 A to ~1.8 A on a 20 W
+# charger, so keep it on while the numbers look sane and fall back to the
+# PM8150B linear charger otherwise.
+
+set -u
+
+REG=/sys/bus/i2c/devices/15-0065/registers
+PM=/sys/class/power_supply/pm8150b-charger
+BAT=/sys/class/power_supply/bq27z561-0
+
+PUMP_ON='0c c7'
+PUMP_OFF='0c 47'
+
+[ -e "$REG" ] || exit 0
+
+# Battery over-current protection at 5 A (the vendor device tree disables it).
+echo '02 1e' > "$REG" 2>/dev/null || true
+
+pps_dir() { ls -d /sys/class/power_supply/tcpm-source-psy-* 2>/dev/null | head -1; }
+
+pump_on()  { echo "$PUMP_ON"  > "$REG" 2>/dev/null || true; }
+pump_off() { echo "$PUMP_OFF" > "$REG" 2>/dev/null || true; }
+
+pump_active() {
+    # bit 7 of register 0x0C stays set only while the converter runs
+    v=$(cat "$REG" 2>/dev/null | awk '/Reg\[0C\]/{print $3}')
+    [ "${v:-0}" = "0xc7" ]
+}
+
+cleanup() { pump_off; }
+trap cleanup INT TERM EXIT
+
+while :; do
+    online=$(cat "$PM/online" 2>/dev/null || echo 0)
+    vbat=$(cat "$BAT/voltage_now" 2>/dev/null || echo 0)
+    temp=$(cat "$BAT/temp" 2>/dev/null || echo 0)
+    status=$(cat "$BAT/status" 2>/dev/null || echo Unknown)
+    ps=$(pps_dir)
+    vbus=0
+    [ -n "$ps" ] && vbus=$(cat "$ps/voltage_max" 2>/dev/null || echo 0)
+
+    allow=1
+    [ "$online" = "1" ] || allow=0                        # no USB power
+    [ "${vbus:-0}" -ge 8000000 ] 2>/dev/null || allow=0     # need the 9 V PDO
+    [ "$vbat" -ge 3400000 ] 2>/dev/null || allow=0          # skip pre-charge
+    [ "$vbat" -le 4350000 ] 2>/dev/null || allow=0          # taper out near full
+    [ "$temp" -le 420 ] 2>/dev/null || allow=0              # 42.0 C
+
+    if [ "$allow" = "1" ]; then
+        pump_active || pump_on
+    else
+        pump_off
+    fi
+
+    sleep 10
+done

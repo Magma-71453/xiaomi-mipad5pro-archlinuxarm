@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""mango-touchd — touch gestures for MangoWM.
+
+  3-finger swipe left / right   previous / next tag that has clients
+  3-finger swipe up             overview toggle
+
+Nothing else is bound: applications are launched only from the dock or rofi.
+"""
+import json
+import os
+import select
+import socket
+import struct
+import sys
+
+PANEL_W, PANEL_H = 1600, 2560     # touch device native (portrait) axes
+LOG_W, LOG_H = 1280, 800          # logical output after rr:3 + scale 2
+SWIPE_MIN = 120                   # logical px
+EVENT = struct.Struct("llHHi")
+EV_SYN, EV_KEY, EV_ABS = 0, 1, 3
+SYN_REPORT = 0
+BTN_TOUCH = 0x14A
+ABS_MT_SLOT = 0x2F
+ABS_MT_POSITION_X = 0x35
+ABS_MT_POSITION_Y = 0x36
+ABS_MT_TRACKING_ID = 0x39
+
+
+def rt():
+    env = os.environ.get("XDG_RUNTIME_DIR")
+    if env and os.path.isdir(env):
+        try:
+            if any(n.startswith("wayland-") for n in os.listdir(env)):
+                return env
+        except OSError:
+            pass
+    return os.path.expanduser("~/.xdg")
+
+
+def mango_socket():
+    sig = os.environ.get("MANGO_INSTANCE_SIGNATURE")
+    if sig and os.path.exists(sig):
+        return sig
+    base = rt()
+    try:
+        names = sorted(os.listdir(base))
+    except OSError:
+        return None
+    for n in names:
+        if n.startswith("mango-") and n.endswith(".sock"):
+            p = os.path.join(base, n)
+            if ipc(p, "get version"):
+                return p
+    return None
+
+
+def ipc(path, command, timeout=0.4):
+    if not path:
+        return None
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        s.connect(path)
+        s.sendall((command + "\n").encode())
+        data = b""
+        while True:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+            if data.endswith(b"}"):
+                break
+        return data
+    except OSError:
+        return None
+    finally:
+        s.close()
+
+
+class Touch:
+    def __init__(self, dev):
+        self.fd = os.open(dev, os.O_RDONLY | os.O_NONBLOCK)
+        self.slots = {}
+        self.cur_slot = 0
+        self.start = None
+        self.last = None
+        self.max_fingers = 0
+
+    @staticmethod
+    def to_logical(x, y):
+        return (y * LOG_W // PANEL_H, (PANEL_W - x) * LOG_H // PANEL_W)
+
+    def points(self):
+        return [(s[1], s[2]) for s in self.slots.values() if s[0] >= 0]
+
+    def finish(self, sock):
+        if self.start and self.last and self.max_fingers >= 3:
+            x0, y0 = self.to_logical(*self.start)
+            x1, y1 = self.to_logical(*self.last)
+            dx, dy = x1 - x0, y1 - y0
+            if max(abs(dx), abs(dy)) >= SWIPE_MIN:
+                if abs(dx) > abs(dy):
+                    cmd = "viewnext_have_client" if dx < 0 else "viewprev_have_client"
+                else:
+                    cmd = "toggleoverview" if dy < 0 else None
+                if cmd:
+                    ipc(sock, "dispatch " + cmd)
+        self.start = self.last = None
+        self.max_fingers = 0
+
+    def run(self):
+        sock = mango_socket()
+        print("mango-touchd: socket=%s" % sock, flush=True)
+        while True:
+            r, _, _ = select.select([self.fd], [], [], 0.5)
+            if not r:
+                if not sock or not os.path.exists(sock):
+                    sock = mango_socket()
+                continue
+            try:
+                data = os.read(self.fd, EVENT.size * 64)
+            except BlockingIOError:
+                continue
+            except OSError:
+                return
+            for off in range(0, len(data) - EVENT.size + 1, EVENT.size):
+                _, _, etype, code, value = EVENT.unpack_from(data, off)
+                if etype == EV_ABS:
+                    if code == ABS_MT_SLOT:
+                        self.cur_slot = value
+                        continue
+                    st = self.slots.setdefault(self.cur_slot, [-1, 0, 0])
+                    if code == ABS_MT_TRACKING_ID:
+                        st[0] = value
+                        if value == -1:
+                            self.slots.pop(self.cur_slot, None)
+                    elif code == ABS_MT_POSITION_X:
+                        st[1] = value
+                        if self.start is None:
+                            self.start = (value, st[2])
+                        self.last = (value, st[2])
+                    elif code == ABS_MT_POSITION_Y:
+                        st[2] = value
+                        if self.start is None:
+                            self.start = (st[1], value)
+                        self.last = (st[1], value)
+                elif etype == EV_KEY and code == BTN_TOUCH and value == 0:
+                    self.finish(sock)
+                elif etype == EV_SYN and code == SYN_REPORT:
+                    n = len(self.points())
+                    self.max_fingers = max(self.max_fingers, n)
+
+
+def find_device(name="NVTCapacitiveTouchScreen"):
+    base = "/sys/class/input"
+    try:
+        entries = sorted(os.listdir(base))
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.startswith("event"):
+            continue
+        try:
+            with open(os.path.join(base, entry, "device", "name")) as f:
+                if f.read().strip() == name:
+                    return "/dev/input/" + entry
+        except OSError:
+            continue
+    return None
+
+
+def main():
+    dev = sys.argv[1] if len(sys.argv) > 1 else find_device()
+    if not dev:
+        print("mango-touchd: touchscreen not found", file=sys.stderr)
+        return 1
+    Touch(dev).run()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

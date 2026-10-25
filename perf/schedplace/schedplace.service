@@ -1,0 +1,48 @@
+# schedplace.service — 用户态线程放置守护进程
+#
+# 只接管线程放置（affinity + cgroup v2 cpuset），不写 governor/频率/hotplug。
+# 需要 root：写 /sys/fs/cgroup/.../cpuset.cpus、cgroup.threads 以及给别的
+# 进程/线程调 sched_setaffinity 都需要 CAP_SYS_NICE；普通用户只能调自己拥有的线程。
+#
+# 安装：make -C perf/schedplace install DESTDIR=... （或手动放到 /usr/bin + /etc）
+# 启动前先观察（不需要 root，不写任何文件）：
+#   schedplace --dry-run --config /etc/schedplace/schedplace.conf
+#   schedplace --once --dry-run --config /etc/schedplace/schedplace.conf
+# 运行中查看状态与计数器（SIGUSR1 打印到 journal）：
+#   systemctl kill -s USR1 schedplace.service
+#   journalctl -u schedplace.service -n 40
+#
+# cgroup v2 cpuset 前置条件（unit 会用 ConditionPathIsMountPoint 检查挂载）：
+#   mount -t cgroup2 none /sys/fs/cgroup        # 发行版通常已挂载
+#   cat /sys/fs/cgroup/cgroup.controllers       # 需包含 cpuset
+# 线程级迁移还要求受管组处于 threaded 子树；否则守护进程会告警并退化为仅 affinity。
+
+[Unit]
+Description=schedplace — rule based thread placement (affinity + cpuset only)
+Documentation=file:///usr/share/doc/schedplace/perf.md
+ConditionPathIsMountPoint=/sys/fs/cgroup
+RequiresMountsFor=/sys/fs/cgroup
+After=systemd-udev-settle.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/schedplace --config /etc/schedplace/schedplace.conf
+Restart=on-failure
+RestartSec=2
+# 放置是“纠正性”的：重启后重新收敛即可，不做任何持久化写入。
+KillSignal=SIGTERM
+TimeoutStopSec=5
+Nice=-5
+# 允许访问 cgroup v2 层级（默认 ProtectSystem 会挡住 /sys/fs/cgroup 写入）。
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=no
+RestrictAddressFamilies=AF_UNIX
+# sched_setaffinity / setpriority 属于 @resources（不在 @system-service 里），
+# 少了它守护进程在 unit 下会被 EPERM 掉，什么都放不了。
+SystemCallFilter=@system-service @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
