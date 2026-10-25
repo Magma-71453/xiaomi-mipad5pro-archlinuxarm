@@ -108,6 +108,268 @@ static struct box arrow_box, status_box, status_icon[3], power_box;
 
 static void repaint(void);
 
+/* ========================================================================== *
+ * StatusNotifierItem host (the real "system tray")
+ *
+ * Applications that "close to tray" register with org.kde.StatusNotifierWatcher
+ * on the session bus and expose org.kde.StatusNotifierItem.  Without a host
+ * that answers the watcher interface they simply exit, so implement both sides
+ * here: the watcher service plus one icon per registered item.
+ * ========================================================================== */
+
+#include <systemd/sd-bus.h>
+
+#define MAX_SNI     8
+#define SNI_ICON    32
+
+struct sni_item {
+	char *service;
+	char *path;
+	char *id;
+	char *title;
+	char *icon_name;
+	int status;
+	uint32_t *pix;      /* ARGB32, SNI_ICON x SNI_ICON */
+	int pix_w, pix_h;
+	int menu_is_item;
+};
+
+static sd_bus *bus;
+static int bus_fd = -1;
+static struct sni_item snis[MAX_SNI];
+static int nsni;
+static int sni_dirty;
+
+static const char *SNI_WATCHER = "org.kde.StatusNotifierWatcher";
+static const char *SNI_WATCHER_PATH = "/StatusNotifierWatcher";
+static const char *SNI_IFACE = "org.kde.StatusNotifierItem";
+
+static uint32_t *sni_pixmap_from_message(sd_bus_message *m, int *out_w, int *out_h) {
+	int best_w = 0, best_h = 0;
+	uint32_t *best = NULL;
+	int r;
+	if ((r = sd_bus_message_enter_container(m, 'a', "(iiay)")) < 0) return NULL;
+	while (sd_bus_message_enter_container(m, 'r', "(iiay)") > 0) {
+		int w = 0, h = 0;
+		const void *data = NULL;
+		size_t n = 0;
+		if (sd_bus_message_read(m, "ii", &w, &h) < 0) break;
+		if (sd_bus_message_read_array(m, 'y', &data, &n) < 0) break;
+		if (w > 0 && h > 0 && n >= (size_t)w * h * 4 && w <= 128 && h <= 128) {
+			uint32_t *argb = malloc((size_t)w * h * 4);
+			if (argb) {
+				const unsigned char *b = data;
+				for (int i = 0; i < w * h; i++)
+					argb[i] = ((uint32_t)b[i * 4] << 24) | ((uint32_t)b[i * 4 + 1] << 16) |
+						  ((uint32_t)b[i * 4 + 2] << 8) | (uint32_t)b[i * 4 + 3];
+				if (!best || w > best_w) {
+					free(best);
+					best = argb;
+					best_w = w;
+					best_h = h;
+				} else {
+					free(argb);
+				}
+			}
+		}
+		sd_bus_message_exit_container(m);
+	}
+	sd_bus_message_exit_container(m);
+	*out_w = best_w;
+	*out_h = best_h;
+	return best;
+}
+
+static void sni_refresh_icon(struct sni_item *it) {
+	sd_bus_error err = SD_BUS_ERROR_NULL;
+	sd_bus_message *m = NULL;
+	free(it->pix);
+	it->pix = NULL;
+	it->pix_w = it->pix_h = 0;
+	if (sd_bus_call_method(bus, it->service, it->path, "org.freedesktop.DBus.Properties",
+			       "Get", &err, &m, "ss", SNI_IFACE, "IconPixmap") < 0) {
+		sd_bus_error_free(&err);
+		return;
+	}
+	if (sd_bus_message_enter_container(m, 'v', "a(iiay)") > 0) {
+		it->pix = sni_pixmap_from_message(m, &it->pix_w, &it->pix_h);
+		sd_bus_message_exit_container(m);
+	}
+	sd_bus_message_unref(m);
+	sd_bus_error_free(&err);
+}
+
+static char *sni_prop_str(struct sni_item *it, const char *name) {
+	char *out = NULL;
+	sd_bus_error err = SD_BUS_ERROR_NULL;
+	if (sd_bus_get_property_string(bus, it->service, it->path, SNI_IFACE, name, &err, &out) < 0) {
+		sd_bus_error_free(&err);
+		return NULL;
+	}
+	return out;
+}
+
+static void sni_read_props(struct sni_item *it) {
+	free(it->id); free(it->title); free(it->icon_name);
+	it->id = sni_prop_str(it, "Id");
+	it->title = sni_prop_str(it, "Title");
+	it->icon_name = sni_prop_str(it, "IconName");
+	sd_bus_error err = SD_BUS_ERROR_NULL;
+	if (sd_bus_get_property_trivial(bus, it->service, it->path, SNI_IFACE, "Status", &err, 's',
+					&it->status) < 0) {
+		sd_bus_error_free(&err);
+	}
+	sni_refresh_icon(it);
+}
+
+static int sni_add(const char *service) {
+	if (nsni >= MAX_SNI) return -1;
+	for (int i = 0; i < nsni; i++)
+		if (!strcmp(snis[i].service, service)) return 0;
+
+	struct sni_item *it = &snis[nsni];
+	memset(it, 0, sizeof *it);
+	it->service = strdup(service);
+	it->path = strdup("/StatusNotifierItem");
+	/* some clients pass an object path instead of a bus name */
+	if (service[0] == '/') {
+		free(it->service);
+		it->service = NULL;
+		free(it->path);
+		it->path = strdup(service);
+	}
+	sni_read_props(it);
+	nsni++;
+	sni_dirty = 1;
+	return 0;
+}
+
+static void sni_remove(const char *service) {
+	for (int i = 0; i < nsni; i++) {
+		if (!strcmp(snis[i].service, service)) {
+			free(snis[i].service); free(snis[i].path); free(snis[i].id);
+			free(snis[i].title); free(snis[i].icon_name); free(snis[i].pix);
+			memmove(&snis[i], &snis[i + 1], sizeof(struct sni_item) * (size_t)(nsni - i - 1));
+			nsni--;
+			sni_dirty = 1;
+			return;
+		}
+	}
+}
+
+static void sni_emit(sd_bus *b, const char *member, const char *arg) {
+	sd_bus_message *m = NULL;
+	if (sd_bus_message_new_signal(b, &m, SNI_WATCHER_PATH, SNI_WATCHER, member) < 0) return;
+	sd_bus_message_append(m, "s", arg ? arg : "");
+	sd_bus_send(b, m, NULL);
+	sd_bus_message_unref(m);
+}
+
+static int watcher_register_item(sd_bus_message *m, void *ud, sd_bus_error *err) {
+	(void)ud; (void)err;
+	const char *svc = NULL;
+	if (sd_bus_message_read(m, "s", &svc) < 0 || !svc) return -EINVAL;
+	sni_add(svc);
+	sni_emit(sd_bus_message_get_bus(m), "StatusNotifierItemRegistered", svc);
+	return sd_bus_reply_method_return(m, NULL);
+}
+
+static int watcher_register_host(sd_bus_message *m, void *ud, sd_bus_error *err) {
+	(void)ud; (void)err;
+	return sd_bus_reply_method_return(m, NULL);
+}
+
+static int watcher_get_prop(sd_bus *b, const char *path, const char *iface,
+			    const char *prop, sd_bus_message *reply, void *ud, sd_bus_error *err) {
+	(void)b; (void)ud;
+	if (strcmp(path, SNI_WATCHER_PATH) || strcmp(iface, SNI_WATCHER)) return -EINVAL;
+	if (!strcmp(prop, "IsStatusNotifierHostRegistered"))
+		return sd_bus_message_append(reply, "b", 1);
+	if (!strcmp(prop, "ProtocolVersion"))
+		return sd_bus_message_append(reply, "i", 0);
+	if (!strcmp(prop, "RegisteredStatusNotifierItems")) {
+		int r = sd_bus_message_open_container(reply, 'a', "s");
+		if (r < 0) return r;
+		for (int i = 0; i < nsni; i++)
+			if (snis[i].service) sd_bus_message_append(reply, "s", snis[i].service);
+		return sd_bus_message_close_container(reply);
+	}
+	return sd_bus_error_setf(err, SD_BUS_ERROR_UNKNOWN_PROPERTY, "unknown %s", prop);
+}
+
+static const sd_bus_vtable watcher_vtable[] = {
+	SD_BUS_VTABLE_START(0),
+	SD_BUS_METHOD("RegisterStatusNotifierItem", "s", "", watcher_register_item,
+		      SD_BUS_VTABLE_UNPRIVILEGED),
+	SD_BUS_METHOD("RegisterStatusNotifierHost", "s", "", watcher_register_host,
+		      SD_BUS_VTABLE_UNPRIVILEGED),
+	SD_BUS_PROPERTY("RegisteredStatusNotifierItems", "as", watcher_get_prop, 0,
+			SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
+	SD_BUS_PROPERTY("IsStatusNotifierHostRegistered", "b", watcher_get_prop, 0, 0),
+	SD_BUS_PROPERTY("ProtocolVersion", "i", watcher_get_prop, 0, 0),
+	SD_BUS_SIGNAL("StatusNotifierItemRegistered", "s", 0),
+	SD_BUS_SIGNAL("StatusNotifierItemUnregistered", "s", 0),
+	SD_BUS_VTABLE_END
+};
+
+/* item signals (NewIcon / NewTitle / NewStatus) */
+static int sni_filter(sd_bus_message *m, void *ud, sd_bus_error *err) {
+	(void)ud; (void)err;
+	const char *iface = sd_bus_message_get_interface(m);
+	const char *member = sd_bus_message_get_member(m);
+	const char *sender = sd_bus_message_get_sender(m);
+	if (!iface || !member || !sender) return 0;
+	if (strcmp(iface, SNI_IFACE)) return 0;
+	for (int i = 0; i < nsni; i++) {
+		if (!snis[i].service || strcmp(snis[i].service, sender)) continue;
+		if (!strcmp(member, "NewIcon") || !strcmp(member, "NewIconThemePath")) {
+			sni_refresh_icon(&snis[i]);
+			sni_dirty = 1;
+		} else if (!strcmp(member, "NewTitle")) {
+			free(snis[i].title);
+			snis[i].title = sni_prop_str(&snis[i], "Title");
+			sni_dirty = 1;
+		} else if (!strcmp(member, "NewStatus")) {
+			sni_dirty = 1;
+		}
+		return 0;
+	}
+	return 0;
+}
+
+static int sni_bus_init(void) {
+	if (sd_bus_default_user(&bus) < 0) return -1;
+	sd_bus_set_exit_on_disconnect(bus, 0);
+
+	if (sd_bus_add_object_vtable(bus, NULL, SNI_WATCHER_PATH, SNI_WATCHER, watcher_vtable, NULL) < 0)
+		return -1;
+
+	int r = sd_bus_request_name(bus, SNI_WATCHER, 0);
+	if (r < 0) fprintf(stderr, "mango-bar: cannot own %s: %s\n", SNI_WATCHER, strerror(-r));
+
+	sd_bus_add_filter(bus, NULL, sni_filter, NULL);
+	sd_bus_match_signal(bus, NULL, NULL, NULL, SNI_IFACE, "NewIcon", NULL, NULL);
+	sd_bus_match_signal(bus, NULL, NULL, NULL, SNI_IFACE, "NewTitle", NULL, NULL);
+	sd_bus_match_signal(bus, NULL, NULL, NULL, SNI_IFACE, "NewStatus", NULL, NULL);
+
+	sd_bus_flush(bus);
+	bus_fd = sd_bus_get_fd(bus);
+	return 0;
+}
+
+static void sni_activate(int idx) {
+	if (idx < 0 || idx >= nsni) return;
+	sd_bus_call_method_async(bus, NULL, snis[idx].service, snis[idx].path, SNI_IFACE,
+				 "Activate", NULL, NULL, "ii", 0, 0);
+}
+
+static void sni_context(int idx) {
+	if (idx < 0 || idx >= nsni) return;
+	sd_bus_call_method_async(bus, NULL, snis[idx].service, snis[idx].path, SNI_IFACE,
+				 "ContextMenu", NULL, NULL, "ii", 0, 0);
+}
+
+
 /* ------------------------------------------------------------------ util */
 
 static void set_hex(cairo_t *cr, const char *hex, double a) {
@@ -569,10 +831,10 @@ static void draw(unsigned char *fb) {
 	arrow_box.w = ARROW_W; arrow_box.h = TRAY_ITEM;
 	draw_chevron(cr, ax + ARROW_W / 2, cy, tray_open);
 
-	/* tray icons (hidden windows), growing to the left */
+	/* system tray: StatusNotifierItem icons, growing to the left */
 	if (tray_open) {
 		double tx = ax - 8;
-		for (int i = 0; i < ntray && i < MAX_TRAY; i++) {
+		for (int i = 0; i < nsni && i < MAX_SNI; i++) {
 			tx -= TRAY_ITEM;
 			tray_box[i].x = tx; tray_box[i].y = cy - TRAY_ITEM / 2.0;
 			tray_box[i].w = TRAY_ITEM; tray_box[i].h = TRAY_ITEM;
@@ -585,10 +847,24 @@ static void draw(unsigned char *fb) {
 			cairo_set_line_width(cr, 1);
 			cairo_stroke(cr);
 
-			char letter[8] = {0};
-			const char *name = tray[i].appid[0] ? tray[i].appid : tray[i].title;
-			if (name[0]) {
-				letter[0] = name[0];
+			if (snis[i].pix && snis[i].pix_w > 0) {
+				cairo_surface_t *is = cairo_image_surface_create_for_data(
+					(unsigned char *)snis[i].pix, CAIRO_FORMAT_ARGB32,
+					snis[i].pix_w, snis[i].pix_h, snis[i].pix_w * 4);
+				double sc = fmin((TRAY_ITEM - 10.0) / snis[i].pix_w,
+					(TRAY_ITEM - 10.0) / snis[i].pix_h);
+				double dw = snis[i].pix_w * sc, dh = snis[i].pix_h * sc;
+				cairo_save(cr);
+				cairo_translate(cr, tx + (TRAY_ITEM - dw) / 2, tray_box[i].y + (TRAY_ITEM - dh) / 2);
+				cairo_scale(cr, sc, sc);
+			cairo_set_source_surface(cr, is, 0, 0);
+				cairo_paint(cr);
+				cairo_restore(cr);
+				cairo_surface_destroy(is);
+			} else {
+				char letter[8] = {0};
+				const char *nm = snis[i].id ? snis[i].id : (snis[i].title ? snis[i].title : "?");
+				letter[0] = nm[0] ? nm[0] : '?';
 				text_at(cr, letter, 15, C_ICON, tx + TRAY_ITEM / 2, cy + 5, 1);
 			}
 			tx -= TRAY_GAP;
@@ -738,10 +1014,10 @@ static void pointer_button(void *d, struct wl_pointer *p, uint32_t serial, uint3
 			spawn(cmd);
 		}
 		break;
-	case 2:		/* tray icon */
-		if (press_idx < 0 || press_idx >= ntray) break;
-		if (is_long) tray_menu(press_idx);
-		else tray_restore(press_idx);
+	case 2:		/* system tray icon (StatusNotifierItem) */
+		if (press_idx < 0 || press_idx >= nsni) break;
+		if (is_long) sni_context(press_idx);
+		else sni_activate(press_idx);
 		break;
 	case 3:		/* chevron: collapse / expand */
 		tray_open = !tray_open;
@@ -845,6 +1121,8 @@ int main(int argc, char **argv) {
 	}
 
 	load_actions();
+	if (sni_bus_init() < 0)
+		fprintf(stderr, "mango-bar: StatusNotifierWatcher unavailable\n");
 
 	display = wl_display_connect(NULL);
 	if (!display) { fprintf(stderr, "mango-bar: cannot connect to the compositor\n"); return 1; }
@@ -885,9 +1163,17 @@ int main(int argc, char **argv) {
 		wl_display_dispatch_pending(display);
 		wl_display_flush(display);
 
-		struct pollfd pfd = { .fd = wfd, .events = POLLIN };
-		if (poll(&pfd, 1, 250) > 0 && (pfd.revents & POLLIN)) {
-			if (wl_display_dispatch(display) < 0) break;
+		struct pollfd pfds[2] = { { .fd = wfd, .events = POLLIN },
+					 { .fd = bus_fd, .events = POLLIN } };
+		int nfds = bus_fd >= 0 ? 2 : 1;
+		if (poll(pfds, (nfds_t)nfds, 250) > 0) {
+			if (pfds[0].revents & POLLIN) {
+				if (wl_display_dispatch(display) < 0) break;
+			}
+			if (nfds == 2 && (pfds[1].revents & POLLIN)) {
+				while (sd_bus_process(bus, NULL) > 0) {}
+				sd_bus_flush(bus);
+			}
 		}
 
 		time_t now = time(NULL);
@@ -895,6 +1181,7 @@ int main(int argc, char **argv) {
 		if (now != last_clients) { refresh_clients(); last_clients = now; }
 		if (now - last_status >= 2) { refresh_status(); last_status = now; }
 		if (power_armed && now - power_armed_at > 3) { power_armed = 0; dirty = 1; }
+		if (sni_dirty) { sni_dirty = 0; dirty = 1; }
 		if (dirty) repaint();
 	}
 

@@ -19,15 +19,37 @@
 | 状态胶囊 | 扬声器 / Wi‑Fi / 蓝牙 三个独立热区 | 分别打开 `kitty -1 -e alsamixer` / `nmtui` / `bluetoothctl` |
 | 电源键 | 圆形红色 | 点一次进入待确认（实心），3 秒内再点执行 `systemctl poweroff` |
 
-## 系统托盘是怎么实现的
+## 系统托盘（真正的 StatusNotifierItem 宿主）
 
-mango 没有 SNI（StatusNotifierItem）协议、也没有 minimize/tag 客户端命令以外的窗口管理 API，所以托盘由 **bar 自己托管**：
+`mango-bar` 在会话总线上实现 **`org.kde.StatusNotifierWatcher`**，因此支持「关闭时退到托盘」的应用（Qt/Electron，如 bilibili、微信）
+在关闭时能真正把图标注册进来，而不会因为找不到托盘宿主直接退出。
 
-- 隐藏：`long press 窗口胶囊` → `mango-dispatch dispatch tag,client,<id>,9`（把窗口丢到 9 号标签，界面上看不见）；
-- 还原：`mango-dispatch dispatch tag,client,<id>,<原标签>` + `view,<原标签>` + `focusid client,<id>`；
-- 托盘列表、折叠状态都由 bar 进程内维护，托盘图标因此随 bar 重启而清空（窗口仍在 9 号标签上，可用 `view,9` 找回）。
+| 方向 | 我们提供 |
+|---|---|
+| Watcher 方法 | `RegisterStatusNotifierItem(s)`、`RegisterStatusNotifierHost(s)` |
+| Watcher 属性 | `RegisteredStatusNotifierItems`（as）、`IsStatusNotifierHostRegistered`（b，恒为 true）、`ProtocolVersion`（i） |
+| Watcher 信号 | `StatusNotifierItemRegistered(s)` / `StatusNotifierItemUnregistered(s)` |
+| Item 侧 | 读取 `Id` / `Title` / `Status` / `IconName` / `IconPixmap`（a(iiay)，取最大一张），并订阅 `NewIcon` / `NewTitle` / `NewStatus` |
+| 交互 | 单击 → `Activate(0,0)`（回到窗口）；长按 → `ContextMenu(0,0)` |
 
-真正对接第三方「退出到托盘」的 SNI 宿主需要实现 `org.kde.StatusNotifierWatcher`，属于另一个量级的工程，暂未做。
+验证方式：
+
+```sh
+busctl --user get-property org.kde.StatusNotifierWatcher /StatusNotifierWatcher \
+        org.kde.StatusNotifierWatcher IsStatusNotifierHostRegistered     # -> b true
+busctl --user get-property org.kde.StatusNotifierWatcher /StatusNotifierWatcher \
+        org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems     # -> as N "..."
+```
+
+### 尚未实现
+
+- **dbusmenu 渲染**：`ContextMenu` 只是通知应用「弹出你的菜单」，菜单内容需要宿主实现 `com.canonical.dbusmenu`（`GetLayout` 等）并自己画出来。
+  目前长按只会发出请求，Qt 应用的菜单不会显示；要做的话是下一块工作。
+- Legacy **XEmbed** 托盘（老式 GTK2/X11 图标）不支持。
+
+### 窗口「藏入托盘」的补充功能
+
+窗口胶囊长按仍会把窗口挪到 9 号标签（`dispatch tag,client,<id>,9`），单击还原；这是 WM 侧的快捷隐藏，和上面的 SNI 托盘互不影响。
 
 ## 动作配置
 

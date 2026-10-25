@@ -18,9 +18,10 @@ if [ ! -f xdg-shell-protocol.c ]; then
 		/usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml xdg-shell-client-protocol.h
 fi
 
+# libsystemd provides sd-bus, used for the StatusNotifierWatcher/Item host
 cc -O2 -Wall -Wextra -o mango-bar mango-bar.c \
 	wlr-layer-shell-unstable-v1-protocol.c xdg-shell-protocol.c \
-	$(pkg-config --cflags --libs wayland-client cairo) -lm
+	$(pkg-config --cflags --libs wayland-client cairo libsystemd) -lm
 
 echo "built $(pwd)/mango-bar"
 
