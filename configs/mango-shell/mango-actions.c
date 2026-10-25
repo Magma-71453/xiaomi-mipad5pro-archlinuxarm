@@ -18,6 +18,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/input-event-codes.h>
+#include <glob.h>
+#include <sys/file.h>
 #include <math.h>
 #include <poll.h>
 #include <stdarg.h>
@@ -720,6 +722,31 @@ int main(int argc, char **argv) {
 		snprintf(sock_path, sizeof sock_path, "%s", argv[1]);
 	else if (sig)
 		snprintf(sock_path, sizeof sock_path, "%s", sig);
+	if (!sock_path[0]) {
+		/* started by hand (or by a launcher that forgets the argument): find the
+		 * compositor socket ourselves, otherwise every command silently goes
+		 * nowhere and the edit mode looks broken. */
+		const char *rt = getenv("XDG_RUNTIME_DIR");
+		char pat[512];
+		snprintf(pat, sizeof pat, "%s/mango-*.sock", rt ? rt : "/run/user/1000");
+		glob_t g;
+		if (glob(pat, 0, NULL, &g) == 0 && g.gl_pathc > 0)
+			snprintf(sock_path, sizeof sock_path, "%s", g.gl_pathv[0]);
+		globfree(&g);
+	}
+	fprintf(stderr, "mango-actions: ipc socket = %s\n", sock_path[0] ? sock_path : "<none>");
+
+	/* one instance only: two full-screen overlays fight over the same touches */
+	{
+		const char *rt2 = getenv("XDG_RUNTIME_DIR");
+		char lk[512];
+		snprintf(lk, sizeof lk, "%s/mango-actions.lock", rt2 ? rt2 : "/tmp");
+		int lockfd = open(lk, O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+		if (lockfd >= 0 && flock(lockfd, LOCK_EX | LOCK_NB) < 0) {
+			fprintf(stderr, "mango-actions: another instance is running, exiting\n");
+			return 0;
+		}
+	}
 	srand((unsigned)time(NULL));
 
 	display = wl_display_connect(NULL);
