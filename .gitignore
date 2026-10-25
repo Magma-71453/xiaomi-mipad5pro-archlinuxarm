@@ -1,0 +1,52 @@
+# ---- 只跟踪源码 / 脚本 / 配置 / 补丁 / 文档，绝不跟踪二进制产物 ----
+
+# 构建产物出口（build-*.sh 会重新创建）
+output/
+
+# 镜像与打包产物
+*.img
+*.img.gz
+*.img.xz
+*.img.zst
+*.apk
+*.tar
+*.tar.*
+*.zip
+*.deb
+*.pkg.tar.*
+boot.img
+Image
+Image.gz
+*.dtb
+*.dtbo
+*.ko
+*.zst
+
+# 编译中间物与本地构建树
+abuild/
+.src/
+pkg/
+src/
+.output/
+.build/
+chroot/
+pmbootstrap-work/
+*.o
+*.a
+*.so
+
+# 本机调试残留
+*.core
+.askpass.sh
+.rsh
+perf/schedplace/schedplace
+perf/schedplace/tests/fake_sp
+
+# 编辑器与系统垃圾
+*.swp
+*.orig
+*.rej
+*~
+.DS_Store
+__pycache__/
+*.pyc

@@ -1,0 +1,31 @@
+#!/bin/sh
+# =============================================================================
+# elish-wifi-setup — create a NetworkManager Wi-Fi profile on the device.
+# The image ships no Wi-Fi password: this helper asks for SSID/password and lets
+# NetworkManager write /etc/NetworkManager/system-connections/<SSID>.nmconnection
+# (mode 0600).  Requires root (run as root or with sudo).
+# =============================================================================
+set -eu
+
+if [ "$(id -u)" != "0" ]; then
+    echo "run as root (sudo elish-wifi-setup)" >&2
+    exit 1
+fi
+
+command -v nmcli >/dev/null 2>&1 || { echo "nmcli not found (NetworkManager missing)" >&2; exit 1; }
+systemctl is-enabled NetworkManager.service >/dev/null 2>&1 || systemctl enable --now NetworkManager.service
+
+printf 'SSID: '
+read -r ssid
+[ -n "$ssid" ] || { echo "empty SSID" >&2; exit 1; }
+printf 'Wi-Fi password (WPA-PSK, hidden input): '
+stty -echo
+read -r psk
+stty echo
+echo
+[ -n "$psk" ] || { echo "empty password" >&2; exit 1; }
+
+# --ask keeps the secret out of the process list; nmcli stores it 0600
+nmcli --ask device wifi connect "$ssid" password "$psk"
+nmcli connection modify "$ssid" connection.autoconnect yes
+echo "profile written: /etc/NetworkManager/system-connections/$ssid.nmconnection (mode 0600)"

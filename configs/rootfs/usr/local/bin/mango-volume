@@ -1,0 +1,58 @@
+#!/bin/sh
+# mango-volume — hardware volume keys for the Xiaomi Pad 5 Pro (ALSA, 4 speaker amps).
+#
+#   mango-volume up|down|mute|set <0-100>
+#
+# The qcom machine driver exposes per-amp "Digital PCM" volume controls
+# (BLL/BLH/BRL/BRH, 0..913). PipeWire has no working sink on this device yet, so
+# we drive ALSA directly and keep the level in a state file.
+CARD="${MANGO_VOLUME_CARD:-0}"
+STEP="${MANGO_VOLUME_STEP:-5}"
+rt="${XDG_RUNTIME_DIR:-$HOME/.xdg}"
+state="$rt/mango-volume"
+muted="$rt/mango-volume.muted"
+mkdir -p "$rt" 2>/dev/null
+
+controls() {
+	# the 4 speaker amps: BLL / BLR / BLH / BRH "Digital PCM"
+	amixer -c "$CARD" scontrols 2>/dev/null |
+		grep -E "Digital PCM" |
+		cut -d "'" -f 2
+}
+
+apply() {  # $1 = percent
+	p="$1"
+	[ "$p" -lt 0 ] && p=0
+	[ "$p" -gt 100 ] && p=100
+	controls | while IFS= read -r c; do
+		[ -n "$c" ] && amixer -c "$CARD" sset "$c" "${p}%" >/dev/null 2>&1
+	done
+	echo "$p" > "$state"
+	printf '%s\n' "$p" > "$rt/mango-osd-value"
+	pkill -USR1 -x mango-osd 2>/dev/null
+}
+
+current() {
+	amixer -c "$CARD" sget "BLL Digital PCM" 2>/dev/null |
+		awk -F"[][]" "/Mono:/{gsub(/%/,\"\",\$2); print \$2; exit}"
+}
+cur=$(current)
+[ -n "$cur" ] || cur=40
+
+case "$1" in
+	up)   apply $((cur + STEP)) ;;
+	down) apply $((cur - STEP)) ;;
+	mute)
+		# the amp "Digital PCM" controls have no switch, so mute = 0% + restore
+		if [ -e "$muted" ]; then
+			apply "$(cat "$muted" 2>/dev/null || echo 40)"
+			rm -f "$muted"
+		else
+			current > "$muted"
+			apply 0
+		fi
+		;;
+	set)  apply "${2:-40}" ;;
+	*)    echo "usage: mango-volume up|down|mute|set <0-100>" >&2; exit 2 ;;
+esac
+exit 0

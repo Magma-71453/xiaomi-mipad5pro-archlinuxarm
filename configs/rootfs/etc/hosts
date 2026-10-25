@@ -1,0 +1,3 @@
+# /etc/hosts — xiaomi-elish
+127.0.0.1 localhost elish
+::1       localhost elish

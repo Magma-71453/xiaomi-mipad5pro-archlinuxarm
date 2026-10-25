@@ -1,0 +1,12 @@
+#!/bin/sh
+# Toggle "window actions" mode (dock's pointer button).
+# While on: tap a window, then × close / ○ full screen / ✋ drag.
+rt="${XDG_RUNTIME_DIR:-$HOME/.xdg}"
+flag="$rt/mango-actions"
+if [ -e "$flag" ]; then
+	rm -f "$flag"
+else
+	mkdir -p "$rt"
+	date +%s > "$flag"
+fi
+exit 0

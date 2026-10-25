@@ -1,0 +1,38 @@
+# NetworkManager keyfile TEMPLATE for a WPA2/WPA3-PSK Wi-Fi network.
+# No password is stored in the image: instantiate it on the device with
+#
+#   elish-wifi-setup                    # interactive, asks for SSID + password
+#
+# or by hand:
+#   install -D -m 600 /dev/null /etc/NetworkManager/system-connections/<SSID>.nmconnection
+#   sed -e 's/^ssid=.*/ssid=<SSID>/' -e 's/^psk=.*/psk=<PASSWORD>/' \
+#       /usr/share/elish/wifi-profile.nmconnection.template \
+#     | sudo tee /etc/NetworkManager/system-connections/<SSID>.nmconnection >/dev/null
+#   sudo nmcli connection reload && sudo nmcli connection up <SSID>
+[connection]
+id=elish-wifi
+uuid=00000000-0000-4000-8000-000000000000
+type=wifi
+autoconnect=true
+permissions=
+
+[wifi]
+mode=infrastructure
+ssid=CHANGE_ME_SSID
+band=bg
+cloned-mac-address=permanent
+mac-address-blacklist=
+
+[wifi-security]
+auth-alg=open
+key-mgmt=wpa-psk
+psk=CHANGE_ME_PASSWORD
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+addr-gen-mode=stable-privacy
+
+[proxy]

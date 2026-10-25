@@ -1,0 +1,16 @@
+#!/bin/sh
+# mango-dispatch — send an mmsg command to the live mango instance.
+# Finds the instance socket itself, so it works from any context (lisgd, ssh,
+# cron) regardless of MANGO_INSTANCE_SIGNATURE / XDG_RUNTIME_DIR.
+#   mango-dispatch dispatch viewnext_have_client
+for rt in "$HOME/.xdg" "${XDG_RUNTIME_DIR:-}"; do
+	[ -n "$rt" ] && [ -d "$rt" ] || continue
+	for s in "$rt"/mango-*.sock; do
+		[ -S "$s" ] || continue
+		if MANGO_INSTANCE_SIGNATURE="$s" mmsg get version >/dev/null 2>&1; then
+			MANGO_INSTANCE_SIGNATURE="$s" exec mmsg "$@"
+		fi
+	done
+done
+echo "mango-dispatch: no live mango socket found" >&2
+exit 1

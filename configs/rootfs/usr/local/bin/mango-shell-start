@@ -1,0 +1,50 @@
+#!/bin/sh
+# mango-shell-start — bring up the desktop shell exactly once per session.
+#
+# Components:
+#   mangrove-decor   macOS-style window strips (close / minimise / zoom + drag)
+#   mango-dock       centred frosted dock
+#   mango-osd        volume OSD
+#   mango-touchd     touch gestures (tags / overview)
+#   mango-keys       hardware volume keys
+#   swaybg           wallpaper
+rt="${XDG_RUNTIME_DIR:-}"
+[ -n "$rt" ] && [ -d "$rt" ] || rt="${HOME}/.xdg"
+export XDG_RUNTIME_DIR="$rt"
+mkdir -p "$XDG_RUNTIME_DIR"; chmod 700 "$XDG_RUNTIME_DIR"
+
+# stop previous instances (bracket-free anchored patterns: they cannot match us)
+pkill -f '^python3 /usr/local/bin/mango-touchd' 2>/dev/null
+pkill -f '^python3 /usr/local/bin/mango-keys' 2>/dev/null
+pkill -f '^python3 /usr/local/bin/mango-place' 2>/dev/null
+pkill -x mango-dock 2>/dev/null
+pkill -x mango-osd 2>/dev/null
+pkill -x mango-decor 2>/dev/null   # macOS-style decorator removed
+pkill -x mango-actions 2>/dev/null
+# old shell pieces from the previous design
+pkill -f '^python3 /usr/local/bin/mango-arrange' 2>/dev/null
+pkill -f '^python3 /usr/local/bin/mango-shell-watch' 2>/dev/null
+pkill -x mango-arrange-overlay 2>/dev/null
+pkill -x mangobar 2>/dev/null
+pkill -x waybar 2>/dev/null
+sleep 0.4
+
+setsid /usr/local/bin/mango-touchd </dev/null >/dev/null 2>&1 &
+setsid /usr/local/bin/mango-keys </dev/null >/dev/null 2>&1 &
+setsid env DOCK_SCALE=2 /usr/local/bin/mango-dock </dev/null >/dev/null 2>&1 &
+setsid env DOCK_SCALE=2 /usr/local/bin/mango-osd </dev/null >/dev/null 2>&1 &
+setsid /usr/local/bin/mango-place </dev/null >/dev/null 2>&1 &
+# supervisor: the overlay exits when the compositor drops it, keep it alive
+pkill -f 'mango-actions-super' 2>/dev/null
+setsid sh -c 'while :; do
+    /usr/local/bin/mango-run sh -c "exec /usr/local/bin/mango-actions \"\$MANGO_INSTANCE_SIGNATURE\"" >>"$XDG_RUNTIME_DIR/mango-actions.log" 2>&1
+    sleep 1
+done' mango-actions-super </dev/null >/dev/null 2>&1 &
+
+pkill -x swaybg 2>/dev/null; sleep 0.3
+if [ -f "$HOME/.wallpaper.jpg" ]; then
+	setsid swaybg -i "$HOME/.wallpaper.jpg" </dev/null >/dev/null 2>&1 &
+else
+	setsid swaybg -c '#101014' </dev/null >/dev/null 2>&1 &
+fi
+exit 0

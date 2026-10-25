@@ -1,0 +1,14 @@
+#!/bin/sh
+# mango-osk-toggle — show/hide the wvkbd on-screen keyboard.
+# wvkbd signals: SIGUSR1 hide, SIGUSR2 show, SIGRTMIN toggle.
+# Heights/font are tuned for DSI-1 1600x2560 @ scale 2 (800x1280 logical).
+if pidof wvkbd-mobintl >/dev/null 2>&1; then
+	kill -s RTMIN $(pidof wvkbd-mobintl) 2>/dev/null
+	exit 0
+fi
+# WVKBD_CENTER_W tells our patched wvkbd to center a fixed-width keyboard
+# at the bottom instead of stretching it across the screen.
+setsid env WVKBD_CENTER_W=1280 WVKBD_BOTTOM_MARGIN=82 /usr/local/bin/wvkbd-mobintl --non-exclusive --width 680 \
+	--corner-radius 18 -H 340 -L 220 --bg-alpha 210 --alpha 235 \
+	--fn "Noto Sans CJK SC 18" </dev/null >/dev/null 2>&1 &
+exit 0

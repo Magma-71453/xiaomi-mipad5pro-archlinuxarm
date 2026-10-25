@@ -1,0 +1,3 @@
+# Allow every member of wheel to run anything (password required once a TTY
+# session has authenticated; no NOPASSWD on purpose).
+%wheel ALL=(ALL:ALL) ALL

@@ -1,0 +1,11 @@
+[Unit]
+Description=Detach the debug USB gadget (restores charging, no serial console)
+After=multi-user.target usb-net-debug.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'echo "" > /sys/kernel/config/usb_gadget/g1/UDC 2>/dev/null || true'
+
+[Install]
+WantedBy=multi-user.target

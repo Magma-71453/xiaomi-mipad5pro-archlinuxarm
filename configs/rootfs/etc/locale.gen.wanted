@@ -1,0 +1,4 @@
+# Locales that build-rootfs.sh uncomments in /etc/locale.gen and compiles with
+# the aarch64 localedef under qemu-user-static (--prefix <rootfs>).
+en_US.UTF-8 UTF-8
+zh_CN.UTF-8 UTF-8

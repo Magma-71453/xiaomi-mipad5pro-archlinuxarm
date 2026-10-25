@@ -1,0 +1,102 @@
+--- a/sound/soc/qcom/sm8250.c
++++ b/sound/soc/qcom/sm8250.c
+@@ -21,6 +21,49 @@
+ 
+ static unsigned int tdm_slot_offset[8] = {0, 4, 8, 12, 16, 20, 24, 28};
+ 
++
++/* elish speaker TDM link tunables.
++ *
++ * CS35L41_SP_FRAME_RX_SLOT (0x4820) is not a TDM slot index but an ASP RX
++ * channel selector: 0 selects the left channel, 2 selects the right one.  The
++ * machine driver never programmed it, so every amplifier kept its power-on
++ * default and all eight speakers played the left channel.
++ *
++ * The device tree lists the T* amplifiers (i2c3, left side of the tablet)
++ * first and the B* amplifiers (i2c1, right side) last, hence the j < 4 split.
++ * The remaining parameters let the link be retuned with modprobe while
++ * bringing audio up.
++ *
++ *   modprobe snd_soc_sm8250 left_slot=0 right_slot=2
++ */
++static int left_slot = 0;
++module_param(left_slot, int, 0644);
++MODULE_PARM_DESC(left_slot, "RX channel select for the left-hand amplifiers (0 = left, 2 = right)");
++
++static int right_slot = 2;
++module_param(right_slot, int, 0644);
++MODULE_PARM_DESC(right_slot, "RX channel select for the right-hand amplifiers (0 = left, 2 = right)");
++
++static int tx_mask = 0;
++module_param(tx_mask, int, 0644);
++MODULE_PARM_DESC(tx_mask, "TDM TX slot mask (mask + 1 disables the override)");
++
++static int rx_mask = 3;
++module_param(rx_mask, int, 0644);
++MODULE_PARM_DESC(rx_mask, "TDM RX slot mask");
++
++static int tdm_slots = 8;
++module_param(tdm_slots, int, 0644);
++MODULE_PARM_DESC(tdm_slots, "TDM slots per frame");
++
++static int tdm_width = 32;
++module_param(tdm_width, int, 0644);
++MODULE_PARM_DESC(tdm_width, "TDM slot width in bits");
++
++static int amp_slot_mode = 0;
++module_param(amp_slot_mode, int, 0644);
++MODULE_PARM_DESC(amp_slot_mode, "0 = left/right halves, 1 = one slot per amplifier");
++
+ struct sm8250_snd_data {
+ 	bool stream_prepared[AFE_PORT_MAX];
+ 	struct snd_soc_card *card;
+@@ -68,11 +111,11 @@
+ 	int channels, slots, slot_width;
+ 
+ 	channels = params_channels(params);
+-	slots = 8;
+-	slot_width = 32;
++	slots = tdm_slots;
++	slot_width = tdm_width;
+ 
+ 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+-	  ret = snd_soc_dai_set_tdm_slot(cpu_dai, 0, 0x03,
++	  ret = snd_soc_dai_set_tdm_slot(cpu_dai, 0x11, 0x03,
+ 	                  slots, slot_width);
+ 	  if (ret < 0) {
+ 	          dev_err(rtd->dev, "%s: failed to set tdm slot, err:%d\n",
+@@ -174,12 +217,26 @@
+ 			TDM_BCLK_RATE, SNDRV_PCM_STREAM_PLAYBACK);
+ 
+ 		for_each_rtd_codec_dais(rtd, j, codec_dai) {
++			unsigned int rx_slot;
++
+ 			ret = snd_soc_dai_set_fmt(codec_dai, codec_dai_fmt);
+ 			snd_soc_dai_set_sysclk(codec_dai, 0, TDM_BCLK_RATE, SNDRV_PCM_STREAM_PLAYBACK);
+ 			if (ret < 0) {
+ 				dev_err(rtd->dev, "TDM fmt err:%d\n", ret);
+ 				return ret;
+ 			}
++			/* CS35L41_SP_FRAME_RX_SLOT selects which ASP RX channel the
++			 * amplifier plays: 0 = left, 2 = right.  Without this every amp
++			 * keeps its power-on default and all eight speakers play the
++			 * left channel.  The DT lists the T* amps (i2c3, left side of
++			 * the tablet) first and the B* amps (i2c1, right side) last.
++			 */
++			rx_slot = (amp_slot_mode == 1) ? j : ((j < 4) ? left_slot : right_slot);
++			ret = snd_soc_dai_set_channel_map(codec_dai, 0, NULL, 1, &rx_slot);
++			if (ret < 0) {
++				dev_err(rtd->dev, "TDM channel map err:%d\n", ret);
++				return ret;
++			}
+ 		}
+ 		break;
+ 	case PRIMARY_TDM_RX_0:
+@@ -260,6 +317,7 @@
+ 	}
+ }
+ 
++
+ static int sm8250_platform_probe(struct platform_device *pdev)
+ {
+ 	struct snd_soc_card *card;

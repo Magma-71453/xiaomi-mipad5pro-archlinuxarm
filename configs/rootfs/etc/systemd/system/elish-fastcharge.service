@@ -1,0 +1,12 @@
+[Unit]
+Description=elish fast-charge supervisor (bq2597x charge pump)
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/elish-fastcharge
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

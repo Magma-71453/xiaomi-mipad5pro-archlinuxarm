@@ -1,0 +1,38 @@
+# /etc/fstab — xiaomi-elish (Arch Linux ARM, aarch64)
+# Root filesystem is f2fs on the GPT partition whose partition label is "linux"
+# (/dev/sda36, ~195 GiB; the image is built at 16 GiB and grown on first boot
+# with resize.f2fs).  The kernel and initramfs are NOT in this rootfs: they live
+# on the boot_b partition.
+#
+# Every option below exists in Documentation/filesystems/f2fs.rst of the
+# sm8250 kernel tree (.build/kbuild/src/linux-sm8250-*/):
+#   background_gc=on  "Turn on/off cleaning operations ... Default value for this
+#                      option is on"  — stated explicitly, same as the default.
+#   inline_xattr      "Enable the inline xattrs feature." (xattrs go into the
+#                      inode block instead of an extra block)
+#   inline_dentry     "Enable the inline dir feature: data in newly created
+#                      directory entries can be written into inode block."
+#   nodiscard         counterpart of "discard/nodiscard  Enable/disable real-time
+#                      discard"; we trim with the enabled fstrim.timer instead of
+#                      issuing discard on every segment clean.
+#   errors=remount-ro "Specify f2fs behavior on critical errors ... remount the
+#                      partition in read-only mode" (kernel default is "continue").
+#   relatime          generic VFS atime option (not an f2fs-specific token).
+# NOT used, and why:
+#   atgc, gc_merge     newer background-GC paths: no measurable gain on a 16 GiB
+#                      rootfs, one more kernel code path at boot.
+#   inline_data        already the kernel default ("inline data feature is
+#                      enabled by default" — f2fs.rst), so it is left alone.
+#   compress_*         the kernel has no CONFIG_F2FS_FS_COMPRESSION, and the
+#                      image is not formatted with the compression feature.
+#   checkpoint=disable, fastboot, nobarrier  trade durability/mount time for
+#                      performance — not acceptable for a root filesystem.
+#   mode=lfs           zoned block devices only (UFS is not zoned).
+#   heap / no_heap     documented as "Deprecated.".
+#
+# <file system>   <dir>     <type>  <options>                                                                     <dump> <pass>
+PARTLABEL=linux   /         f2fs    rw,relatime,background_gc=on,inline_xattr,inline_dentry,nodiscard,errors=remount-ro   0 1
+proc              /proc     proc    nosuid,noexec,nodev                    0      0
+sysfs             /sys      sysfs   nosuid,noexec,nodev                    0      0
+devpts            /dev/pts  devpts  mode=0620,gid=5,nosuid,noexec          0      0
+tmpfs             /tmp      tmpfs   rw,nosuid,nodev,size=1G                0      0

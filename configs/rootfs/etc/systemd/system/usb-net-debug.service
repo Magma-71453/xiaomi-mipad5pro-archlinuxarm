@@ -1,0 +1,12 @@
+[Unit]
+Description=USB Ethernet gadget (elish debug channel)
+After=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/usb-net-up.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

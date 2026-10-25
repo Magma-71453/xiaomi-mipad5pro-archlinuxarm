@@ -1,0 +1,6 @@
+[Match]
+Name=usb0
+
+[Network]
+Address=10.11.12.2/24
+LinkLocalAddressing=ipv6

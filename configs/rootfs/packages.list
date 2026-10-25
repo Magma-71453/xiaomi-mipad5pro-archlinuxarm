@@ -1,0 +1,48 @@
+# Requested package set for the xiaomi-elish (Mi Pad 5 Pro) Arch Linux ARM rootfs.
+# Format: one package name per line, '#' comments ignored.
+# build-rootfs.sh resolves the full dependency closure of this list against the
+# ALARM core/extra/alarm databases and skips everything the base tarball already
+# provides (see output/20261024/rootfs/* findings in docs/findings/rootfs.md).
+#
+# --- minimal Wayland desktop stack -------------------------------------------
+wayland
+wayland-protocols
+libinput
+libdrm
+mesa
+pixman
+seatd
+libxkbcommon
+xorg-xwayland
+wlroots0.20
+scenefx
+# --- session / system services -----------------------------------------------
+networkmanager
+wpa_supplicant
+iw
+polkit
+# sshd for headless debugging; host keys are generated on first boot
+openssh
+bluez
+bluez-utils
+pipewire
+pipewire-pulse
+pipewire-alsa
+wireplumber
+alsa-ucm-conf
+alsa-utils
+# --- firmware needed by the GPU / DSP (Adreno a690 blobs live here) ---------
+linux-firmware-qcom
+# --- filesystem tools (fsck.f2fs is needed for the boot-time fsck pass) ------
+f2fs-tools
+# --- interactivity / build tooling -------------------------------------------
+sudo
+vim
+htop
+# MangoWM runtime: libcjson.so.1 (nothing else pulls it)
+cjson
+git
+base-devel
+meson
+cmake
+ninja

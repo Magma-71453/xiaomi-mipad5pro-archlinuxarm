@@ -1,0 +1,16 @@
+#!/bin/sh
+# mango-session — start MangoWM manually (the normal path is ~/.bash_profile
+# on tty1).  XDG_RUNTIME_DIR must exist and be 0700, otherwise wlroots cannot
+# add its Wayland socket and mango exits with rc=1.
+set -u
+uid=$(id -u)
+rt="${XDG_RUNTIME_DIR:-$HOME/.xdg}"
+log="$HOME/mango.log"
+mkdir -p "$rt" 2>/dev/null || true
+chmod 700 "$rt" 2>/dev/null || true
+export XDG_RUNTIME_DIR="$rt"
+export XDG_SESSION_TYPE=wayland XDG_CURRENT_DESKTOP=mango XDG_SESSION_DESKTOP=mango
+export MOZ_ENABLE_WAYLAND=1 QT_QPA_PLATFORM=wayland SDL_VIDEODRIVER=wayland GDK_BACKEND=wayland
+{ echo "=== mango-session start $(date -Is) uid=$uid rt=$rt ==="; ls -l /dev/dri 2>&1; } >> "$log" 2>&1
+/usr/bin/mango >> "$log" 2>&1
+echo "=== mango exited rc=$? ===" >> "$log"
