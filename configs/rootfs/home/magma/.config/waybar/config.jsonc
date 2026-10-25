@@ -11,7 +11,7 @@
   "modules-right": ["tray", "pulseaudio", "network", "bluetooth", "custom/power"],
 
   "wlr/taskbar": {
-    "format": "{title}",
+    "format": "{app_id}",
     "icon-size": 0,
     "icon-theme": "hicolor",
     "tooltip-format": "{title}",
