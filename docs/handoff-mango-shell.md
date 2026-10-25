@@ -37,7 +37,7 @@ v1 的平铺 + 整理/编辑模式被**整体废弃**（对触摸平板太逞强
 |---|---|---|
 | `/usr/local/bin/mango-shell-start` | `configs/rootfs/usr/local/bin/` | **唯一启动入口**：decor / dock / osd / touchd / keys / 壁纸；顺带清理旧组件与 waybar |
 | `mango-touchd` | 同上 | 触摸手势：3 指左右切 tag、3 指上滑 overview（**没有任何启动软件的手势**） |
-| `mango-keys` | 同上 | 音量键 115/114/113 → `mango-volume` |
+| ~~`mango-keys`~~ | 已移除 | 音量键守护（evdev 轮询）CPU 占用过高，见 bug.md B-042 |
 | `mango-volume` | 同上 | ALSA 8 个功放 `*Digital PCM`，±5%，mute=记值设 0% |
 | `mango-dispatch` / `mango-run` | 同上 | 自动找活的 mango socket 后转发 `mmsg` / exec 程序 |
 | `mango-osk-toggle` | 同上 | wvkbd 开关（`WVKBD_BOTTOM_MARGIN=82` 让它停在 dock 上沿）（`--non-exclusive --width 680`，居中补丁） |

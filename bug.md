@@ -457,3 +457,15 @@
 - 顺带：`configs/perf/schedplace.conf` 同步为 `probe_ms = 1000`、`interval_ms = 2000`。
 - 备注：`mango-keys`（键盘守护）也曾出现 98% CPU，重启后恢复 0.3%；推测是 evdev 设备被移除后 fd 一直可读、`os.read` 返回空导致忙等，
   后续可在 `os.read` 返回空时关闭该 fd。
+
+## B-042 mango-keys 长期吃满一个核心（已移除）
+
+- 现象：`python3 /usr/local/bin/mango-keys` 常驻 **96.1% CPU**（实测 `etimes` 7342 s、`%CPU 96.1`），是继 schedplace（B-041）之后的第二个 CPU 大户。
+- 程序行为：遍历所有 `/dev/input/event*`，`select()` 0.5 s 超时 + 每 2 s 重扫热插拔，把音量键 115/114/113 转给 `mango-volume`。
+- 推测根因：与 B-041 同类 —— 某个 evdev 设备被移除/阻塞后 fd 持续可读、`os.read()` 返回 0 字节，循环不再等待而变成忙等；
+  重启守护会短暂恢复（曾观察到重启后 0.3%），随后再次爬升。
+- 处置：**直接移除**（用户决定，音量的收益不值得一个核）：
+  - 设备：`pkill -f mango-keys` + 删除 `/usr/local/bin/mango-keys` + 从 `/usr/local/bin/mango-shell-start` 去掉启动/清理行；
+  - 仓库：删除 `configs/rootfs/usr/local/bin/mango-keys`，同步 `mango-shell-start`，文档（`docs/mango.md`、`handoff-mango-shell.md`、`mango-shell-summary.md`、`README.md`）标注已移除。
+- 效果：`ps` 前几名变为 `wechat 10.8%`、`mango 7.1%`，不再有单核常驻占用。
+- 替代方案：音量用 dock / OSD 调节；若将来要恢复硬件按键，正确做法是在 `mango` 配置里绑定 keysym（不用轮询守护）。

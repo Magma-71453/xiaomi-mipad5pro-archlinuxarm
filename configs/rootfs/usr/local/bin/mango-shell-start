@@ -6,7 +6,6 @@
 #   mango-dock       centred frosted dock
 #   mango-osd        volume OSD
 #   mango-touchd     touch gestures (tags / overview)
-#   mango-keys       hardware volume keys
 #   swaybg           wallpaper
 rt="${XDG_RUNTIME_DIR:-}"
 [ -n "$rt" ] && [ -d "$rt" ] || rt="${HOME}/.xdg"
@@ -15,7 +14,6 @@ mkdir -p "$XDG_RUNTIME_DIR"; chmod 700 "$XDG_RUNTIME_DIR"
 
 # stop previous instances (bracket-free anchored patterns: they cannot match us)
 pkill -f '^python3 /usr/local/bin/mango-touchd' 2>/dev/null
-pkill -f '^python3 /usr/local/bin/mango-keys' 2>/dev/null
 pkill -f '^python3 /usr/local/bin/mango-place' 2>/dev/null
 pkill -x mango-dock 2>/dev/null
 pkill -x mango-osd 2>/dev/null
@@ -30,7 +28,6 @@ pkill -x waybar 2>/dev/null
 sleep 0.4
 
 setsid /usr/local/bin/mango-touchd </dev/null >/dev/null 2>&1 &
-setsid /usr/local/bin/mango-keys </dev/null >/dev/null 2>&1 &
 setsid env DOCK_SCALE=2 /usr/local/bin/mango-dock </dev/null >/dev/null 2>&1 &
 setsid env DOCK_SCALE=2 /usr/local/bin/mango-osd </dev/null >/dev/null 2>&1 &
 setsid /usr/local/bin/mango-place </dev/null >/dev/null 2>&1 &

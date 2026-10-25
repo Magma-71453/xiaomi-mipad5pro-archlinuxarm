@@ -40,7 +40,7 @@ agetty --autologin magma (tty1)
       └─ /usr/bin/mango               XDG_RUNTIME_DIR=/run/user/<uid>
           └─ exec_once=/usr/local/bin/mango-shell-start    ← 唯一入口
               ├─ mango-touchd          触摸手势（evdev）
-              ├─ mango-keys            音量键（evdev）
+              ├─ (mango-keys 已移除，见 B-042)
               ├─ mango-dock            居中磨砂 dock
               ├─ mango-osd             音量 OSD
               ├─ mango-place           新窗口尺寸 + 居中 + 级联
@@ -58,7 +58,7 @@ agetty --autologin magma (tty1)
 | `mango-actions` | C + cairo | 编辑模式：全屏 overlay 覆盖层，选窗/三钮/四角缩放；`focusid` 置顶 |
 | `mango-place` | python | 新浮动窗口 resize 到 11/16×7/10、`centerwin`、级联偏移 26px |
 | `mango-touchd` | python | 3 指手势：左右切 tag、上滑 overview |
-| `mango-keys` | python | evdev 音量键 115/114/113 → `mango-volume` |
+| ~~`mango-keys`~~ | python | 已移除：evdev 轮询长期吃满一核（B-042） |
 | `mango-volume` | sh | ALSA 8 个功放 `*Digital PCM`，±5%，mute=记值设 0% |
 | `mango-osk-toggle` | sh | wvkbd 开关（`WVKBD_CENTER_W` + `WVKBD_BOTTOM_MARGIN=82`） |
 | `mango-dispatch` / `mango-run` | sh | 自动找活的 mango socket 后转发 `mmsg` / `exec` 程序 |

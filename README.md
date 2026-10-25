@@ -23,7 +23,7 @@ amplifiers, bq2597x charge-pump fast charging and an x86 layer via FEX-Emu.
 |---|---|---|
 | 引导链 | ✅ | ABL → `boot.img`（`Image.gz` + 零填充 dtb + initramfs）→ f2fs 根分区（`PARTLABEL=linux`） |
 | 显示 | ✅ | CSOT 面板 1600×2560@120 Hz、单 mode、`Transform 270`，缩放交给合成器 |
-| 触摸 / 按键 | ✅ | `novatek,NVT-ts-spi`；音量键由 `/usr/local/bin/mango-keys` 直接读 evdev |
+| 触摸 | ✅ | `novatek,NVT-ts-spi`（音量改由 dock / OSD 调节；原 evdev 音量守护已因 CPU 占用移除） |
 | 桌面 | ✅ | MangoWM + 自制外壳（mangobar / dock / OSD / 手势 / 屏幕键盘），见 `docs/mango.md` |
 | Wi-Fi | ✅ | ath11k WCN6855；含「MAC 全 0 导致接口起不来」的修复（`wlp-mac.service`） |
 | 网络 | ✅ | NetworkManager + 公共 DNS 兜底 + `timesyncd`（代理客户端按需自行配置，仓库不含任何订阅/节点信息） |
