@@ -63,6 +63,6 @@
   "custom/power": {
     "format": "\uf011",
     "tooltip": false,
-    "on-click": "systemctl poweroff"
+    "on-click": "/usr/local/bin/mango-powermenu"
   }
 }
