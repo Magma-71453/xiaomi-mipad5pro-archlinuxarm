@@ -1,0 +1,64 @@
+* {
+  font-family: "Noto Sans CJK SC", "Noto Sans Symbols 2", sans-serif;
+  font-size: 14px;
+  border: none;
+  border-radius: 0;
+  min-height: 0;
+}
+
+window#waybar {
+  background: transparent;
+  color: #1F2430;
+}
+
+/* the bar itself */
+window#waybar > box {
+  background: #F7F8FA;
+  border: 1px solid #E2E6ED;
+  border-radius: 16px;
+  padding: 0 8px;
+}
+
+#taskbar button {
+  background: #ECEEF2;
+  border-radius: 11px;
+  padding: 6px 12px;
+  margin: 4px 3px;
+  color: #6B7280;
+}
+
+#taskbar button.active {
+  background: #FFFFFF;
+  border: 1px solid #D8DCE3;
+  color: #1F2430;
+}
+
+#clock {
+  color: #1F2430;
+  padding: 0 12px;
+}
+
+#tray, #pulseaudio, #network, #bluetooth {
+  background: #E9ECF1;
+  border: 1px solid #DDE1E8;
+  border-radius: 17px;
+  padding: 2px 10px;
+  margin: 4px 3px;
+  color: #4B5563;
+}
+
+#tray {
+  padding: 2px 12px;
+}
+
+#custom-power {
+  background: #FBEAEC;
+  border: 1px solid #F3D0D5;
+  border-radius: 17px;
+  color: #D04F61;
+  padding: 2px 12px;
+  margin: 4px 3px;
+  font-size: 16px;
+}
+
+#custom-power:hover{ background: #D04F61; color: #FFFFFF; }

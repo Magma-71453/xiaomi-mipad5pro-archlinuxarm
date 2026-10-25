@@ -1,0 +1,67 @@
+{
+  "layer": "top",
+  "position": "top",
+  "height": 46,
+  "spacing": 6,
+  "margin-top": 6,
+  "margin-left": 8,
+  "margin-right": 8,
+  "modules-left": ["wlr/taskbar"],
+  "modules-center": ["clock"],
+  "modules-right": ["tray", "pulseaudio", "network", "bluetooth", "custom/power"],
+
+  "wlr/taskbar": {
+    "format": "{title}",
+    "icon-size": 0,
+    "icon-theme": "hicolor",
+    "tooltip-format": "{title}",
+    "on-click": "activate",
+    "on-click-middle": "close",
+    "on-click-right": "fullscreen",
+    "all-outputs": true,
+    "active-first": true
+  },
+
+  "clock": {
+    "format": "{:%m/%d %H:%M:%S}",
+    "tooltip": false
+  },
+
+  "tray": {
+    "icon-size": 18,
+    "spacing": 10,
+    "reverse-direction": true
+  },
+
+  "pulseaudio": {
+    "format": "{icon}",
+    "format-muted": "{icon}",
+    "format-icons": { "default": ["🔈", "🔉", "🔊"] },
+    "on-click": "kitty -1 -e alsamixer",
+    "tooltip-format": "音量 {volume}%"
+  },
+
+  "network": {
+    "format-wifi": "📶",
+    "format-ethernet": "🌐",
+    "format-disconnected": "📵",
+    "interval": 30,
+    "tooltip-format-wifi": "{essid} {signalStrength}%",
+    "on-click": "kitty -1 -e nmtui"
+  },
+
+  "bluetooth": {
+    "format": "ᛒ",
+    "format-disabled": "ᛒ",
+    "format-connected": "ᛒ",
+    "interval": 30,
+    "tooltip-format": "{controller_alias}",
+    "on-click": "kitty -1 -e bluetoothctl"
+  },
+
+  "custom/power": {
+    "format": "⏻",
+    "tooltip": false,
+    "on-click": "systemctl poweroff"
+  }
+}
