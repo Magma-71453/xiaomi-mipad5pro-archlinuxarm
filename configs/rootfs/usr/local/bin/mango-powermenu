@@ -27,8 +27,8 @@ ICON_ANDROID = "\uf17b"    # android
 ACTIONS = [
     ("sleep", ICON_SLEEP, "睡眠", "sudo -n systemctl suspend", "确认进入睡眠？"),
     ("poweroff", ICON_POWER, "关机", "( sleep 25; sudo -n systemctl --force poweroff ) >/dev/null 2>&1 & sudo -n systemctl poweroff", "确认关机？"),
-    ("reboot", ICON_REBOOT, "重启", "( sleep 25; sudo -n systemctl --force reboot ) >/dev/null 2>&1 & sudo -n systemctl reboot", "确认重启？"),
-    ("android", ICON_ANDROID, "Android", "sudo -n /usr/local/bin/qbootctl -s 0 && { ( sleep 25; sudo -n systemctl --force reboot ) >/dev/null 2>&1 & sudo -n systemctl reboot; }", "确认切换到 Android？"),
+    ("reboot", ICON_REBOOT, "重启", "( sleep 25; sudo -n systemctl --force reboot; sleep 10; echo b | sudo -n tee /proc/sysrq-trigger ) >/dev/null 2>&1 & sudo -n systemctl reboot", "确认重启？"),
+    ("android", ICON_ANDROID, "Android", "sudo -n /usr/local/bin/qbootctl -s 0 && { ( sleep 25; sudo -n systemctl --force reboot; sleep 10; echo b | sudo -n tee /proc/sysrq-trigger ) >/dev/null 2>&1 & sudo -n systemctl reboot; }", "确认切换到 Android？"),
 ]
 
 CSS = b"""
