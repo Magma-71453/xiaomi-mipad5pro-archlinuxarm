@@ -100,36 +100,17 @@ static int ipc(const char *command, char *out, size_t outsz) {
 	return (int)used;
 }
 
-/* Fire-and-forget.  mango closes the connection after every command, so a
- * long-lived socket silently swallowed the following commands (the close /
- * fullscreen buttons stopped working); reconnecting per command is cheap on a
- * unix socket, and dropping the reply wait is what made dragging smooth. */
+/* mango only executes a command once the reply has been read: closing the
+ * socket right after send() silently drops it (measured: focusid sent without
+ * recv never took effect).  So wait for the reply, but keep the call count
+ * low - the caller coalesces movement to at most ~100 commands per second. */
 static int cmd(const char *fmt, ...) {
-	char b[512];
+	char b[512], r[256];
 	va_list ap;
 	va_start(ap, fmt);
 	vsnprintf(b, sizeof b, fmt, ap);
 	va_end(ap);
-	if (!sock_path[0])
-		return 0;
-	int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-	if (fd < 0)
-		return 0;
-	struct sockaddr_un addr = { .sun_family = AF_UNIX };
-	snprintf(addr.sun_path, sizeof addr.sun_path, "%s", sock_path);
-	if (connect(fd, (struct sockaddr *)&addr, sizeof addr) < 0) {
-		close(fd);
-		return 0;
-	}
-	size_t len = strlen(b);
-	if (len + 2 >= sizeof b) {
-		close(fd);
-		return 0;
-	}
-	b[len++] = '\n';
-	int ok = send(fd, b, len, MSG_NOSIGNAL) == (ssize_t)len;
-	close(fd);
-	return ok;
+	return ipc(b, r, sizeof r) > 0;
 }
 
 /* ------------------------------------------------------------- drawing */
