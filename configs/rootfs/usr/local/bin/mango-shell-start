@@ -26,10 +26,11 @@ pkill -x mango-arrange-overlay 2>/dev/null
 pkill -x mangobar 2>/dev/null
 pkill -x mango-bar 2>/dev/null
 pkill -x waybar 2>/dev/null
+pkill -x waybar 2>/dev/null
 sleep 0.4
 
 setsid /usr/local/bin/mango-touchd </dev/null >/dev/null 2>&1 &
-setsid /usr/local/bin/mango-bar </dev/null >/dev/null 2>&1 &
+setsid waybar </dev/null >/dev/null 2>&1 &
 setsid env DOCK_SCALE=2 /usr/local/bin/mango-dock </dev/null >/dev/null 2>&1 &
 setsid env DOCK_SCALE=2 /usr/local/bin/mango-osd </dev/null >/dev/null 2>&1 &
 setsid /usr/local/bin/mango-place </dev/null >/dev/null 2>&1 &
