@@ -524,3 +524,18 @@
 - 修复：`sanitize_utf8()` 清洗客户端标题与拼接后的胶囊文字、截断后再清洗一次；
   并在画完胶囊后检查 `cairo_status()`，异常则重建 cairo context 兜底。
 - 验证：dump 与真机截图均完整显示胶囊 / 时间 / 托盘三图标 / 电源键。
+
+## B-046 编辑模式（mango-actions）里拖动/缩放窗口很卡
+
+- 现象：从 dock 打开编辑模式后，拖动窗口与拖角缩放明显掉帧。
+- 根因（两个，都在 `configs/mango-shell/mango-actions.c`）：
+  1. `draw()` 每次 motion 都重画整块**全屏** ARGB 缓冲（2560×1600 ≈ 16 MB），并
+     `wl_surface_damage_buffer(0,0,整屏)` 提交整屏 → 每个事件都要重传整张纹理；
+  2. `cmd()` → `ipc()` 每条命令都 `socket()`+`connect()`+`send()`+**同步 `recv()`**+`close()`，
+     拖一个角每帧要发 2 条（movewin + resizewin），等于每帧 2 次阻塞往返。
+- 修复：
+  1. `cmd()` 改为**长连接 + 只发不收**（发送失败才重连），拖动不再等 compositor 回包；
+  2. 位移累积，**最多每 10 ms 发一次**（`cmd_allowed()` + `flush_move()`），抬手时冲掉余量；
+  3. `draw()` 只把**选区矩形（含旧位置）+ 按钮条**标脏，而不是整屏。
+- 构建注意：`mango-actions` 需要 `libcjson`（`pkg-config --libs libcjson`）；
+  `build-dock.sh` 只构建 dock，actions 需单独 `cc`。
