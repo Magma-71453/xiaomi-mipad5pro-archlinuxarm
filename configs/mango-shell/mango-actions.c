@@ -97,13 +97,45 @@ static int ipc(const char *command, char *out, size_t outsz) {
 	return (int)used;
 }
 
+static int ipc_fd = -1;
+
+static int ipc_connect(void) {
+	if (ipc_fd >= 0)
+		return ipc_fd;
+	if (!sock_path[0])
+		return -1;
+	int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+	if (fd < 0)
+		return -1;
+	struct sockaddr_un addr = { .sun_family = AF_UNIX };
+	snprintf(addr.sun_path, sizeof addr.sun_path, "%s", sock_path);
+	if (connect(fd, (struct sockaddr *)&addr, sizeof addr) < 0) {
+		close(fd);
+		return -1;
+	}
+	ipc_fd = fd;
+	return fd;
+}
+
+/* Fire-and-forget: a drag sends one command per motion event, so connecting
+ * and waiting for a reply every time made dragging crawl. */
 static void cmd(const char *fmt, ...) {
-	char b[512], r[256];
+	char b[512];
 	va_list ap;
 	va_start(ap, fmt);
 	vsnprintf(b, sizeof b, fmt, ap);
 	va_end(ap);
-	ipc(b, r, sizeof r);
+	int fd = ipc_connect();
+	if (fd < 0)
+		return;
+	size_t len = strlen(b);
+	if (len + 2 >= sizeof b)
+		return;
+	b[len++] = '\n';
+	if (send(fd, b, len, MSG_NOSIGNAL) != (ssize_t)len) {
+		close(fd);
+		ipc_fd = -1;   /* reconnect on the next command */
+	}
 }
 
 /* ------------------------------------------------------------- drawing */
@@ -227,7 +259,32 @@ static void draw(void) {
 	cairo_surface_flush(cs);
 	cairo_surface_destroy(cs);
 	wl_surface_attach(surface, buf, 0, 0);
-	wl_surface_damage_buffer(surface, 0, 0, win_w * scale, win_h * scale);
+
+	/* The overlay covers the whole screen; damaging all of it made every drag
+	 * motion upload ~16 MB.  Only the selection box and the button strip ever
+	 * change. */
+	static double prev_x, prev_y, prev_w, prev_h;
+	static int have_prev;
+	if (!have_prev || sel_id == 0 || prev_w <= 0) {
+		wl_surface_damage_buffer(surface, 0, 0, win_w * scale, win_h * scale);
+	} else {
+		double x0 = fmin(prev_x, sel_x) - 30, y0 = fmin(prev_y, sel_y) - 30;
+		double x1 = fmax(prev_x + prev_w, sel_x + sel_w) + 30;
+		double y1 = fmax(prev_y + prev_h, sel_y + sel_h) + 30;
+		if (x0 < 0) x0 = 0;
+		if (y0 < 0) y0 = 0;
+		if (x1 > win_w) x1 = win_w;
+		if (y1 > win_h) y1 = win_h;
+		if (x1 > x0 && y1 > y0)
+			wl_surface_damage_buffer(surface, (int32_t)(x0 * scale), (int32_t)(y0 * scale),
+					  (int32_t)((x1 - x0) * scale), (int32_t)((y1 - y0) * scale));
+		wl_surface_damage_buffer(surface, (win_w - 168) * scale, 8 * scale, 168 * scale, 66 * scale);
+	}
+	prev_x = sel_x;
+	prev_y = sel_y;
+	prev_w = sel_w;
+	prev_h = sel_h;
+	have_prev = 1;
 	wl_surface_commit(surface);
 }
 
@@ -346,6 +403,17 @@ static void clear_selection(void) {
 	draw();
 }
 
+static struct timeval last_cmd_tv;
+static int cmd_allowed(void) {
+	struct timeval now;
+	gettimeofday(&now, NULL);
+	long us = (now.tv_sec - last_cmd_tv.tv_sec) * 1000000L + (now.tv_usec - last_cmd_tv.tv_usec);
+	if (last_cmd_tv.tv_sec && us >= 0 && us < 10000)
+		return 0;
+	last_cmd_tv = now;
+	return 1;
+}
+
 static void on_press(double x, double y) {
 	if (getenv("ACT_DEBUG"))
 		fprintf(stderr, "press %.0f,%.0f active=%d sel=%d\n", x, y, active, sel_id);
@@ -412,6 +480,21 @@ static void on_press(double x, double y) {
 	}
 }
 
+static double acc_mx, acc_my, acc_rx, acc_ry;
+
+static void flush_move(void) {
+	if (!sel_id)
+		return;
+	if (acc_mx || acc_my) {
+		cmd("dispatch movewin,%+d,%+d client,%d", (int)acc_mx, (int)acc_my, sel_id);
+		acc_mx = acc_my = 0;
+	}
+	if (acc_rx || acc_ry) {
+		cmd("dispatch resizewin,%+d,%+d client,%d", (int)acc_rx, (int)acc_ry, sel_id);
+		acc_rx = acc_ry = 0;
+	}
+}
+
 static void on_motion(double x, double y) {
 	if (!active) return;
 	if (resizing && sel_id > 0) {
@@ -419,28 +502,29 @@ static void on_motion(double x, double y) {
 		if (!dx && !dy)
 			return;
 		if (corner < 0) {                 /* ⤢ button: bottom-right grows */
-			cmd("dispatch resizewin,%+d,%+d client,%d", dx, dy, sel_id);
+			acc_rx += dx;
+			acc_ry += dy;
 			sel_w += dx;
 			sel_h += dy;
 		} else {
 			switch (corner) {
 			case 0:                       /* top-left */
-				cmd("dispatch movewin,%+d,%+d client,%d", dx, dy, sel_id);
-				cmd("dispatch resizewin,%+d,%+d client,%d", -dx, -dy, sel_id);
+				acc_mx += dx; acc_my += dy;
+				acc_rx -= dx; acc_ry -= dy;
 				sel_x += dx; sel_y += dy; sel_w -= dx; sel_h -= dy;
 				break;
 			case 1:                       /* top-right */
-				cmd("dispatch movewin,+0,%+d client,%d", dy, sel_id);
-				cmd("dispatch resizewin,%+d,%+d client,%d", dx, -dy, sel_id);
+				acc_my += dy;
+				acc_rx += dx; acc_ry -= dy;
 				sel_y += dy; sel_w += dx; sel_h -= dy;
 				break;
 			case 2:                       /* bottom-left */
-				cmd("dispatch movewin,%+d,+0 client,%d", dx, sel_id);
-				cmd("dispatch resizewin,%+d,%+d client,%d", -dx, dy, sel_id);
+				acc_mx += dx;
+				acc_rx -= dx; acc_ry += dy;
 				sel_x += dx; sel_w -= dx; sel_h += dy;
 				break;
 			default:                      /* bottom-right */
-				cmd("dispatch resizewin,%+d,%+d client,%d", dx, dy, sel_id);
+				acc_rx += dx; acc_ry += dy;
 				sel_w += dx; sel_h += dy;
 				break;
 			}
@@ -449,18 +533,24 @@ static void on_motion(double x, double y) {
 		last_y = y;
 		layout_buttons();
 		draw();
+		/* never send more than ~100 commands per second */
+		if (cmd_allowed())
+			flush_move();
 		return;
 	}
 	if (dragging && sel_id > 0) {
 		int dx = (int)(x - last_x), dy = (int)(y - last_y);
 		if (dx || dy) {
-			cmd("dispatch movewin,%+d,%+d client,%d", dx, dy, sel_id);
+			acc_mx += dx;
+			acc_my += dy;
 			sel_x += dx;
 			sel_y += dy;
 			last_x = x;
 			last_y = y;
 			layout_buttons();
 			draw();
+			if (cmd_allowed())
+				flush_move();
 		}
 		return;
 	}
@@ -482,6 +572,7 @@ static void on_motion(double x, double y) {
 }
 
 static void on_release(void) {
+	flush_move();
 	dragging = 0;
 	resizing = 0;
 	corner = -1;
