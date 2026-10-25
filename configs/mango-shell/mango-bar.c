@@ -1,17 +1,20 @@
 /*
  * mango-bar — lightweight top status bar for MangoWM (elish).
  *
- * Layout (design: docs/bar-design.svg, light "Tablet Status Bar"):
+ *   (foot · ~) (bilibili · …)     周日,10/25 23:37:24   (tray…) (v) (🔉📶ᛒ) (⏻)
  *
- *   [foot · ~] [Firefox · Design] …   周日,10/25 23:37:24   (🔉 📶 ᛒ)   (⏻)
- *
- * Left   : one rounded rect per window of the current workspace, focused = white.
+ * Left   : one rounded rect per window of the current workspace.  Tap focuses,
+ *          long press hides the window into the system tray.
  * Middle : clock.
- * Right  : a pill holding three independently clickable icons (speaker, wifi,
- *          bluetooth), each opening its own settings tool, plus a power button
- *          that needs a second click before it powers off.
+ * Tray   : windows hidden by a long press are "parked" off screen; their icons
+ *          live left of the status pill.  Tap restores, long press opens a menu
+ *          (restore / launch entries / close).  The chevron button on the left
+ *          of the tray collapses or expands the tray icons.
+ * Status : one pill, three independent targets - speaker / wifi / bluetooth -
+ *          each opening its own settings tool (kitty -1 -e ...).
+ * Power  : two-step confirm, then systemctl poweroff.
  *
- * Wayland layer-shell + cairo on a rotating pair of shm buffers. No GTK/Qt.
+ * Wayland layer-shell + cairo on a rotating pair of shm buffers; no GTK/Qt.
  */
 #define _GNU_SOURCE
 #include <cairo/cairo.h>
@@ -39,9 +42,13 @@
 #define PILL_MAX_W   190
 #define PILL_GAP     7
 #define MAX_PILLS    4
-#define TRAY_W       130
-#define TRAY_H       34
+#define MAX_TRAY     6
+#define TRAY_ITEM    32
+#define TRAY_GAP     6
+#define ARROW_W      30
+#define STATUS_W     130
 #define POWER_D      34
+#define LONG_PRESS_MS 550
 
 #define C_BAR_BG      "#F7F8FA"
 #define C_BAR_BD      "#E2E6ED"
@@ -61,7 +68,8 @@
 
 #define FONT_UI       "Noto Sans CJK SC"
 
-struct client { int id; char appid[64]; char title[192]; int focused; int visible; };
+struct client { int id; char appid[64]; char title[192]; int focused; int visible; int tag; int x, y, w, h; };
+struct trayent { int id; char appid[64]; char title[192]; int tag; int x, y, w, h; };
 struct box { double x, y, w, h; };
 
 static struct wl_display *display;
@@ -78,6 +86,9 @@ static int scale = 2;
 static int bar_w = 1280, buf_w = 2560, buf_h = BAR_H * 2;
 static struct client clients[MAX_PILLS];
 static int nclients;
+static struct trayent tray[MAX_TRAY];
+static int ntray;
+static int tray_open = 1;
 static char clock_str[64];
 static int vol_pct = 0, vol_mute = 0, wifi_on = 0, bt_on = 0;
 static int power_armed = 0;
@@ -85,13 +96,15 @@ static time_t power_armed_at = 0;
 static int dirty = 1;
 static int pointer_x = -1, pointer_y = -1;
 
-static char cmd_audio[256] = "foot -e alsamixer";
-static char cmd_network[256] = "foot -e nmtui";
-static char cmd_bluetooth[256] = "foot -e bluetoothctl";
+static char cmd_audio[256] = "kitty -1 -e alsamixer";
+static char cmd_network[256] = "kitty -1 -e nmtui";
+static char cmd_bluetooth[256] = "kitty -1 -e bluetoothctl";
 
 static struct box pill_box[MAX_PILLS];
 static int n_pill_boxes;
-static struct box power_box, tray_box, tray_icon[3];
+static struct box tray_box[MAX_TRAY];
+static int n_tray_boxes;
+static struct box arrow_box, status_box, status_icon[3], power_box;
 
 static void repaint(void);
 
@@ -114,8 +127,6 @@ static void rounded_rect(cairo_t *cr, double x, double y, double w, double h, do
 	cairo_close_path(cr);
 }
 
-/* Cairo silently drops every later drawing call once it is handed a string
- * that is not valid UTF-8; window titles are outside our control. */
 static void sanitize_utf8(char *s) {
 	unsigned char *p = (unsigned char *)s;
 	while (*p) {
@@ -150,6 +161,12 @@ static void spawn(const char *cmd) {
 		execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
 		_exit(127);
 	}
+}
+
+static long long now_ms(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
 static void load_actions(void) {
@@ -189,6 +206,11 @@ static void json_str(const char *p, const char *key, char *out, size_t outlen) {
 	sanitize_utf8(out);
 }
 
+static int json_int(const char *p, const char *key) {
+	const char *k = strstr(p, key);
+	return k ? atoi(k + strlen(key)) : 0;
+}
+
 static void refresh_clients(void) {
 	char buf[16384];
 	if (run_cmd("/usr/local/bin/mango-dispatch get all-clients 2>/dev/null", buf, sizeof buf) <= 0)
@@ -205,15 +227,23 @@ static void refresh_clients(void) {
 		json_str(p, "\"appid\":\"", c.appid, sizeof c.appid);
 		c.focused = strstr(p, "\"is_focused\":true") != NULL;
 		c.visible = strstr(p, "\"is_visible\":true") != NULL;
-		if (c.visible) got[n++] = c;
+		c.tag = json_int(p, "\"tags\":[");
+		c.x = json_int(p, "\"x\":");
+		c.y = json_int(p, "\"y\":");
+		c.w = json_int(p, "\"width\":");
+		c.h = json_int(p, "\"height\":");
+
+		int parked = 0;
+		for (int t = 0; t < ntray; t++)
+			if (tray[t].id == c.id) parked = 1;
+		if (c.visible && !parked) got[n++] = c;
 		p += 6;
 	}
 
 	int changed = (n != nclients);
 	for (int i = 0; !changed && i < n; i++)
 		changed = got[i].id != clients[i].id || got[i].focused != clients[i].focused ||
-			  strcmp(got[i].title, clients[i].title) != 0 ||
-			  strcmp(got[i].appid, clients[i].appid) != 0;
+			  strcmp(got[i].title, clients[i].title) != 0;
 	if (changed) {
 		memcpy(clients, got, sizeof(struct client) * (size_t)n);
 		nclients = n;
@@ -257,6 +287,61 @@ static void refresh_clock(void) {
 	}
 }
 
+/* ------------------------------------------------------------ tray actions */
+
+static void tray_hide(int idx) {
+	if (idx < 0 || idx >= nclients || ntray >= MAX_TRAY) return;
+	struct trayent *t = &tray[ntray];
+	memset(t, 0, sizeof *t);
+	t->id = clients[idx].id;
+	t->tag = clients[idx].tag ? clients[idx].tag : 1;
+	t->x = clients[idx].x; t->y = clients[idx].y;
+	t->w = clients[idx].w; t->h = clients[idx].h;
+	snprintf(t->appid, sizeof t->appid, "%s", clients[idx].appid);
+	snprintf(t->title, sizeof t->title, "%s", clients[idx].title);
+	ntray++;
+
+	char cmd[256];
+	snprintf(cmd, sizeof cmd,
+		 "/usr/local/bin/mango-dispatch dispatch tag,client,%d,9 >/dev/null 2>&1",
+		 t->id);
+	spawn(cmd);
+	dirty = 1;
+}
+
+static void tray_restore(int idx) {
+	if (idx < 0 || idx >= ntray) return;
+	struct trayent *t = &tray[idx];
+	char cmd[512];
+	snprintf(cmd, sizeof cmd,
+		 "/usr/local/bin/mango-dispatch dispatch tag,client,%d,%d >/dev/null 2>&1; "
+		 "/usr/local/bin/mango-dispatch dispatch view,%d >/dev/null 2>&1; "
+		 "/usr/local/bin/mango-dispatch dispatch focusid client,%d >/dev/null 2>&1",
+		 t->id, t->tag, t->tag, t->id);
+	spawn(cmd);
+	memmove(&tray[idx], &tray[idx + 1], sizeof(struct trayent) * (size_t)(ntray - idx - 1));
+	ntray--;
+	dirty = 1;
+}
+
+/* long press on a tray icon: restore / launch entries / close */
+static void tray_menu(int idx) {
+	if (idx < 0 || idx >= ntray) return;
+	struct trayent *t = &tray[idx];
+	char cmd[1024];
+	snprintf(cmd, sizeof cmd,
+		 "printf '重新显示\\n关闭应用\\n' | rofi -dmenu -p '%s' -theme-str 'window{width:320px;}' "
+		 "| xargs -r -I{} sh -c 'case \"{}\" in 重新显示) /usr/local/bin/mango-bar-restore %d;; "
+		 "关闭应用) /usr/local/bin/mango-dispatch dispatch killclient client,%d;; esac'",
+		 t->appid[0] ? t->appid : "app", t->id, t->id);
+	spawn(cmd);
+}
+
+static void tray_restore_helper(int id) {
+	for (int i = 0; i < ntray; i++)
+		if (tray[i].id == id) { tray_restore(i); return; }
+}
+
 /* --------------------------------------------------------------- drawing */
 
 static void text_at(cairo_t *cr, const char *txt, double size, const char *color,
@@ -278,7 +363,6 @@ static double text_width(cairo_t *cr, const char *txt, double size) {
 	return te.width;
 }
 
-/* byte-wise truncation must not split a multi-byte character either */
 static void ellipsize(cairo_t *cr, const char *in, double maxw, double size, char *out, size_t outlen) {
 	snprintf(out, outlen, "%s", in);
 	if (text_width(cr, out, size) <= maxw) return;
@@ -354,41 +438,15 @@ static void draw_power(cairo_t *cr, double cx, double cy) {
 	cairo_stroke(cr);
 }
 
-static void draw_pills(cairo_t *cr, double W, double cy) {
-	n_pill_boxes = 0;
-	double x = EDGE + 6;
-	for (int i = 0; i < nclients && i < MAX_PILLS; i++) {
-		char label[320], shown[320];
-		snprintf(label, sizeof label, "%s · %s",
-			 clients[i].appid[0] ? clients[i].appid : "window", clients[i].title);
-		sanitize_utf8(label);
-		ellipsize(cr, label, PILL_MAX_W - 2 * PILL_PAD_X, 14.5, shown, sizeof shown);
-		sanitize_utf8(shown);
-		double tw = text_width(cr, shown, 14.5);
-		double w = tw + 2 * PILL_PAD_X;
-		if (w > PILL_MAX_W) w = PILL_MAX_W;
-		if (x + w > W - (TRAY_W + POWER_D + 40)) break;
-
-		pill_box[n_pill_boxes].x = x;
-		pill_box[n_pill_boxes].y = cy - PILL_H / 2.0;
-		pill_box[n_pill_boxes].w = w;
-		pill_box[n_pill_boxes].h = PILL_H;
-		n_pill_boxes++;
-
-		set_hex(cr, clients[i].focused ? C_PILL_ACT : C_PILL_IDLE, 1);
-		rounded_rect(cr, x, cy - PILL_H / 2.0, w, PILL_H, PILL_R);
-		cairo_fill_preserve(cr);
-		if (clients[i].focused) {
-			set_hex(cr, C_PILL_ACT_BD, 1);
-			cairo_set_line_width(cr, 1);
-			cairo_stroke(cr);
-		} else {
-			cairo_new_path(cr);
-		}
-		text_at(cr, shown, 14.5, clients[i].focused ? C_PILL_FG_ACT : C_PILL_FG_IDLE,
-			x + PILL_PAD_X, cy + 5, 0);
-		x += w + PILL_GAP;
-	}
+/* chevron "<>" pointing down: expands / collapses the tray icons */
+static void draw_chevron(cairo_t *cr, double cx, double cy, int expanded) {
+	set_hex(cr, C_ICON, 1);
+	cairo_set_line_width(cr, 1.6);
+	double h = expanded ? -2.5 : 2.5;
+	cairo_move_to(cr, cx - 6, cy - h);
+	cairo_line_to(cr, cx, cy + h);
+	cairo_line_to(cr, cx + 6, cy - h);
+	cairo_stroke(cr);
 }
 
 static void draw(unsigned char *fb) {
@@ -413,19 +471,56 @@ static void draw(unsigned char *fb) {
 	cairo_set_line_width(cr, 1);
 	cairo_stroke(cr);
 
-	draw_pills(cr, W, cy);
+	/* ---- window pills ---- */
+	n_pill_boxes = 0;
+	double x = EDGE + 6;
+	double right_limit = W - EDGE - 6 - POWER_D - 8 - STATUS_W;
+	if (tray_open) right_limit -= (ARROW_W + 8 + ntray * (TRAY_ITEM + TRAY_GAP));
+	else right_limit -= (ARROW_W + 8);
 
-	/* a client title can still put cairo into an error state; heal it so the
-	 * clock / tray / power button always get drawn */
+	for (int i = 0; i < nclients && i < MAX_PILLS; i++) {
+		char label[320], shown[320];
+		snprintf(label, sizeof label, "%s · %s",
+			 clients[i].appid[0] ? clients[i].appid : "window", clients[i].title);
+		sanitize_utf8(label);
+		ellipsize(cr, label, PILL_MAX_W - 2 * PILL_PAD_X, 14.5, shown, sizeof shown);
+		sanitize_utf8(shown);
+		double tw = text_width(cr, shown, 14.5);
+		double w = tw + 2 * PILL_PAD_X;
+		if (w > PILL_MAX_W) w = PILL_MAX_W;
+		if (x + w > right_limit) break;
+
+		pill_box[n_pill_boxes].x = x;
+		pill_box[n_pill_boxes].y = cy - PILL_H / 2.0;
+		pill_box[n_pill_boxes].w = w;
+		pill_box[n_pill_boxes].h = PILL_H;
+		n_pill_boxes++;
+
+		set_hex(cr, clients[i].focused ? C_PILL_ACT : C_PILL_IDLE, 1);
+		rounded_rect(cr, x, cy - PILL_H / 2.0, w, PILL_H, PILL_R);
+		cairo_fill_preserve(cr);
+		if (clients[i].focused) {
+			set_hex(cr, C_PILL_ACT_BD, 1);
+			cairo_set_line_width(cr, 1);
+			cairo_stroke(cr);
+		} else {
+			cairo_new_path(cr);
+		}
+		text_at(cr, shown, 14.5, clients[i].focused ? C_PILL_FG_ACT : C_PILL_FG_IDLE,
+			x + PILL_PAD_X, cy + 5, 0);
+		x += w + PILL_GAP;
+	}
+
 	if (cairo_status(cr) != CAIRO_STATUS_SUCCESS) {
 		cairo_destroy(cr);
 		cr = cairo_create(cs);
 		cairo_scale(cr, scale, scale);
 	}
 
+	/* ---- clock ---- */
 	text_at(cr, clock_str, 15, C_CLOCK, W / 2.0, cy + 5.5, 1);
 
-	/* power button */
+	/* ---- right cluster: power, status pill, tray icons, chevron ---- */
 	double px = W - EDGE - 6 - POWER_D;
 	power_box.x = px; power_box.y = cy - POWER_D / 2.0;
 	power_box.w = POWER_D; power_box.h = POWER_D;
@@ -447,27 +542,58 @@ static void draw(unsigned char *fb) {
 		draw_power(cr, px + POWER_D / 2, cy);
 	}
 
-	/* tray pill with three separate targets */
-	double tx = px - 8 - TRAY_W;
-	tray_box.x = tx; tray_box.y = cy - TRAY_H / 2.0;
-	tray_box.w = TRAY_W; tray_box.h = TRAY_H;
+	double sx = px - 8 - STATUS_W;
+	status_box.x = sx; status_box.y = cy - TRAY_ITEM / 2.0 - 1;
+	status_box.w = STATUS_W; status_box.h = TRAY_ITEM + 2;
 	set_hex(cr, C_TRAY_BG, 1);
-	rounded_rect(cr, tray_box.x, tray_box.y, TRAY_W, TRAY_H, TRAY_H / 2);
+	rounded_rect(cr, status_box.x, status_box.y, STATUS_W, status_box.h, status_box.h / 2);
 	cairo_fill_preserve(cr);
 	set_hex(cr, C_TRAY_BD, 1);
 	cairo_set_line_width(cr, 1);
 	cairo_stroke(cr);
-
-	double iw = TRAY_W / 3.0;
+	double iw = STATUS_W / 3.0;
 	for (int i = 0; i < 3; i++) {
-		tray_icon[i].x = tx + i * iw;
-		tray_icon[i].y = tray_box.y;
-		tray_icon[i].w = iw;
-		tray_icon[i].h = TRAY_H;
+		status_icon[i].x = sx + i * iw;
+		status_icon[i].y = status_box.y;
+		status_icon[i].w = iw;
+		status_icon[i].h = status_box.h;
 	}
-	draw_speaker(cr, tray_icon[0].x + iw / 2, cy, 1, vol_mute);
-	draw_wifi(cr, tray_icon[1].x + iw / 2, cy, wifi_on);
-	draw_bt(cr, tray_icon[2].x + iw / 2, cy, bt_on);
+	draw_speaker(cr, status_icon[0].x + iw / 2, cy, 1, vol_mute);
+	draw_wifi(cr, status_icon[1].x + iw / 2, cy, wifi_on);
+	draw_bt(cr, status_icon[2].x + iw / 2, cy, bt_on);
+
+	/* chevron button, immediately left of the tray icons */
+	n_tray_boxes = 0;
+	double ax = sx - 8 - ARROW_W;
+	arrow_box.x = ax; arrow_box.y = cy - TRAY_ITEM / 2.0;
+	arrow_box.w = ARROW_W; arrow_box.h = TRAY_ITEM;
+	draw_chevron(cr, ax + ARROW_W / 2, cy, tray_open);
+
+	/* tray icons (hidden windows), growing to the left */
+	if (tray_open) {
+		double tx = ax - 8;
+		for (int i = 0; i < ntray && i < MAX_TRAY; i++) {
+			tx -= TRAY_ITEM;
+			tray_box[i].x = tx; tray_box[i].y = cy - TRAY_ITEM / 2.0;
+			tray_box[i].w = TRAY_ITEM; tray_box[i].h = TRAY_ITEM;
+			n_tray_boxes++;
+
+			set_hex(cr, C_PILL_IDLE, 1);
+			rounded_rect(cr, tx, tray_box[i].y, TRAY_ITEM, TRAY_ITEM, 9);
+			cairo_fill_preserve(cr);
+			set_hex(cr, C_TRAY_BD, 1);
+			cairo_set_line_width(cr, 1);
+			cairo_stroke(cr);
+
+			char letter[8] = {0};
+			const char *name = tray[i].appid[0] ? tray[i].appid : tray[i].title;
+			if (name[0]) {
+				letter[0] = name[0];
+				text_at(cr, letter, 15, C_ICON, tx + TRAY_ITEM / 2, cy + 5, 1);
+			}
+			tx -= TRAY_GAP;
+		}
+	}
 
 	{ const char *dump = getenv("MANGO_BAR_DUMP");
 	  if (dump) cairo_surface_write_to_png(cs, dump); }
@@ -554,6 +680,10 @@ static int inside(const struct box *b, double x, double y) {
 	return x >= b->x && x <= b->x + b->w && y >= b->y && y <= b->y + b->h;
 }
 
+static int press_idx = -1;       /* which pill/tray entry is being pressed */
+static int press_kind = 0;       /* 1 = pill, 2 = tray, 3 = arrow, 4 = status, 5 = power */
+static long long press_at = 0;
+
 static void pointer_enter(void *d, struct wl_pointer *p, uint32_t serial,
 			  struct wl_surface *s, wl_fixed_t x, wl_fixed_t y) {
 	(void)d; (void)p; (void)serial; (void)s;
@@ -575,43 +705,72 @@ static void pointer_motion(void *d, struct wl_pointer *p, uint32_t t, wl_fixed_t
 static void pointer_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t t,
 			   uint32_t button, uint32_t state) {
 	(void)d; (void)p; (void)t; (void)button; (void)serial;
-	if (state != WL_POINTER_BUTTON_STATE_PRESSED) return;
 
 	double x = pointer_x, y = pointer_y;
 
-	for (int i = 0; i < n_pill_boxes; i++) {
-		if (inside(&pill_box[i], x, y)) {
+	if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
+		press_idx = -1; press_kind = 0; press_at = now_ms();
+		for (int i = 0; i < n_pill_boxes; i++)
+			if (inside(&pill_box[i], x, y)) { press_kind = 1; press_idx = i; return; }
+		for (int i = 0; i < n_tray_boxes; i++)
+			if (inside(&tray_box[i], x, y)) { press_kind = 2; press_idx = i; return; }
+		if (inside(&arrow_box, x, y)) { press_kind = 3; return; }
+		for (int i = 0; i < 3; i++)
+			if (inside(&status_icon[i], x, y)) { press_kind = 4; press_idx = i; return; }
+		if (inside(&power_box, x, y)) { press_kind = 5; return; }
+		return;
+	}
+
+	/* release: decide short vs long press */
+	long long held = now_ms() - press_at;
+	int is_long = held >= LONG_PRESS_MS;
+
+	switch (press_kind) {
+	case 1:		/* window pill */
+		if (press_idx < 0 || press_idx >= nclients) break;
+		if (is_long) {
+			tray_hide(press_idx);
+		} else {
 			char cmd[256];
 			snprintf(cmd, sizeof cmd,
 				 "/usr/local/bin/mango-dispatch dispatch focusid client,%d >/dev/null 2>&1",
-				 clients[i].id);
+				 clients[press_idx].id);
 			spawn(cmd);
-			return;
 		}
-	}
-
-	if (inside(&power_box, x, y)) {
+		break;
+	case 2:		/* tray icon */
+		if (press_idx < 0 || press_idx >= ntray) break;
+		if (is_long) tray_menu(press_idx);
+		else tray_restore(press_idx);
+		break;
+	case 3:		/* chevron: collapse / expand */
+		tray_open = !tray_open;
+		dirty = 1;
+		repaint();
+		break;
+	case 4:		/* status icons */
+		spawn(press_idx == 0 ? cmd_audio : press_idx == 1 ? cmd_network : cmd_bluetooth);
+		break;
+	case 5: {	/* power */
 		time_t now = time(NULL);
 		if (power_armed && now - power_armed_at <= 3) {
 			power_armed = 0;
 			dirty = 1;
 			repaint();
 			spawn("systemctl poweroff");
-			return;
+			break;
 		}
 		power_armed = 1;
 		power_armed_at = now;
 		dirty = 1;
 		repaint();
-		return;
+		break;
 	}
-
-	for (int i = 0; i < 3; i++) {
-		if (inside(&tray_icon[i], x, y)) {
-			spawn(i == 0 ? cmd_audio : i == 1 ? cmd_network : cmd_bluetooth);
-			return;
-		}
+	default:
+		break;
 	}
+	press_kind = 0;
+	press_idx = -1;
 }
 
 static const struct wl_pointer_listener pointer_listener = {
@@ -674,10 +833,16 @@ static const struct wl_registry_listener registry_listener = {
 static volatile sig_atomic_t running = 1;
 static void on_term(int sig) { (void)sig; running = 0; }
 
-int main(void) {
+int main(int argc, char **argv) {
 	signal(SIGTERM, on_term);
 	signal(SIGINT, on_term);
 	signal(SIGCHLD, SIG_IGN);
+
+	/* helper mode used by the tray menu: mango-bar --restore <id> */
+	if (argc == 3 && !strcmp(argv[1], "--restore")) {
+		tray_restore_helper(atoi(argv[2]));
+		return 0;
+	}
 
 	load_actions();
 
