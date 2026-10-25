@@ -47,3 +47,14 @@ else
 	setsid swaybg -c '#101014' </dev/null >/dev/null 2>&1 &
 fi
 exit 0
+
+# mango-bar is a plain window now: pin it to the top-left corner
+mango-bar-id() {
+    /usr/local/bin/mango-dispatch get all-clients 2>/dev/null | tr '{' '\n' |
+        grep '"appid":"mango-bar"' | grep -oE '"id":[0-9]+' | head -1 | cut -d: -f2
+}
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    bar_id=$(mango-bar-id)
+    [ -n "$bar_id" ] && /usr/local/bin/mango-dispatch dispatch movewin,0,0 client,"$bar_id" >/dev/null 2>&1 && break
+    sleep 0.3
+done
