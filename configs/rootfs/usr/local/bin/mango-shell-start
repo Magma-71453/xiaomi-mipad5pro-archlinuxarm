@@ -6,6 +6,7 @@
 #   mango-dock       centred frosted dock
 #   mango-osd        volume OSD
 #   mango-touchd     touch gestures (tags / overview)
+#   mango-bar        status bar: window pills / clock / wifi+bt / power
 #   swaybg           wallpaper
 rt="${XDG_RUNTIME_DIR:-}"
 [ -n "$rt" ] && [ -d "$rt" ] || rt="${HOME}/.xdg"
@@ -21,13 +22,14 @@ pkill -x mango-decor 2>/dev/null   # macOS-style decorator removed
 pkill -x mango-actions 2>/dev/null
 # old shell pieces from the previous design
 pkill -f '^python3 /usr/local/bin/mango-arrange' 2>/dev/null
-pkill -f '^python3 /usr/local/bin/mango-shell-watch' 2>/dev/null
 pkill -x mango-arrange-overlay 2>/dev/null
 pkill -x mangobar 2>/dev/null
+pkill -x mango-bar 2>/dev/null
 pkill -x waybar 2>/dev/null
 sleep 0.4
 
 setsid /usr/local/bin/mango-touchd </dev/null >/dev/null 2>&1 &
+setsid /usr/local/bin/mango-bar </dev/null >/dev/null 2>&1 &
 setsid env DOCK_SCALE=2 /usr/local/bin/mango-dock </dev/null >/dev/null 2>&1 &
 setsid env DOCK_SCALE=2 /usr/local/bin/mango-osd </dev/null >/dev/null 2>&1 &
 setsid /usr/local/bin/mango-place </dev/null >/dev/null 2>&1 &
