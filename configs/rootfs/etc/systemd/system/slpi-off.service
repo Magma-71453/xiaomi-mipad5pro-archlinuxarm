@@ -1,0 +1,15 @@
+[Unit]
+Description=Keep the sensor DSP (SLPI) powered down
+Documentation=bug.md B-044
+# The SLPI firmware crash-loops every ~40s on this device (sensor_process
+# USER-PD DOG) and nothing on the system uses it, so keep it offline.
+After=sysinit.target local-fs.target
+Before=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'i=0; while [ $i -lt 50 ]; do for r in /sys/class/remoteproc/remoteproc*; do [ -e "$r/name" ] || continue; if [ "$(cat $r/name 2>/dev/null)" = slpi ]; then echo disabled > $r/recovery 2>/dev/null || true; echo stop > $r/state 2>/dev/null || true; fi; done; break; done'
+
+[Install]
+WantedBy=multi-user.target

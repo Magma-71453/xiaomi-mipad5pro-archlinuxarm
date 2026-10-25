@@ -500,3 +500,27 @@
 
 - 本次开机 SLPI 仍崩溃 2 次（`sensor_process` 的 USER-PD DOG），属于**固件侧**问题，只影响传感器/PDM 麦克风，不影响音频播放；
   控制台安静后不再刷屏。
+
+## B-044 传感器 DSP（SLPI）崩溃循环（已永久关闭）
+
+- 现象：`remoteproc0`（slpi）每 ~40 秒崩一次 —— `PDM: service 'sensor_process' crash: ... USER-PD DOG detects stalled initialization`，
+  内核不断 `recovering slpi`；旧固件问题，本系统没有任何场景使用它（音频/视频分别走 ADSP/CDSP，均正常）。
+- 附带影响：崩溃日志刷 tty、反复的 remoteproc/fastrpc 重建在关机时可能拖住 I/O。
+- 处置（无需重编内核）：
+  ```sh
+  echo disabled > /sys/class/remoteproc/remoteproc0/recovery   # 禁止自动恢复
+  echo stop     > /sys/class/remoteproc/remoteproc0/state      # 断电
+  ```
+  并固化为 `slpi-off.service`（开机执行，按 `name` 匹配 slpi，不误伤 cdsp/adsp）。
+- 验证：`state=offline recovery=disabled`；20 秒内崩溃计数 23 → 23；CDSP/ADSP 仍 `running`。
+
+## B-045 状态栏只画出窗口胶囊（cairo UTF-8 错误态）
+
+- 现象：mango-bar 只有左侧窗口胶囊可见，时钟/托盘/电源全都不出现。
+- 定位：把 bar 的 shm 缓冲直接 dump 成 PNG，缓冲区里同样缺这些元素 → 是绘制问题不是合成器问题；
+  在绘制各段之间打印 `cairo_status()` 得到 `input string not valid UTF-8`。
+- 根因：cairo 一旦收到非法 UTF-8 字符串就进入错误态，**之后所有绘制调用被静默丢弃**；
+  窗口标题来自合成器（中文/截断的多字节序列），`ellipsize()` 也可能在字节截断时切断了一个字符。
+- 修复：`sanitize_utf8()` 清洗客户端标题与拼接后的胶囊文字、截断后再清洗一次；
+  并在画完胶囊后检查 `cairo_status()`，异常则重建 cairo context 兜底。
+- 验证：dump 与真机截图均完整显示胶囊 / 时间 / 托盘三图标 / 电源键。

@@ -1,16 +1,20 @@
 /*
  * mango-bar — lightweight top status bar for MangoWM (elish).
  *
- * Layout follows docs/bar-design.svg:
- *   [ window pills ........................ 周一,10/25 12:34:56  (vol wifi bt) (power) ]
+ * Layout (design: docs/bar-design.svg, light "Tablet Status Bar"):
  *
- * Wayland layer-shell + cairo on an shm buffer; no GTK/Qt, no polling thread.
- * Data sources: "mango-dispatch get all-clients" (JSON), /sys for wifi+bt,
- * "wpctl get-volume" for the sink level.
+ *   [foot · ~] [Firefox · Design] …   周日,10/25 23:37:24   (🔉 📶 ᛒ)   (⏻)
+ *
+ * Left   : one rounded rect per window of the current workspace, focused = white.
+ * Middle : clock.
+ * Right  : a pill holding three independently clickable icons (speaker, wifi,
+ *          bluetooth), each opening its own settings tool, plus a power button
+ *          that needs a second click before it powers off.
+ *
+ * Wayland layer-shell + cairo on a rotating pair of shm buffers. No GTK/Qt.
  */
 #define _GNU_SOURCE
 #include <cairo/cairo.h>
-#include <errno.h>
 #include <fcntl.h>
 #include <math.h>
 #include <poll.h>
@@ -20,45 +24,45 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 #include <wayland-client.h>
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 
-#define BAR_H        52
-#define PAD          10
+#define BAR_H        54
+#define EDGE         8
+#define BAR_H_INNER  (BAR_H - EDGE * 2)
+#define RADIUS       16
 #define PILL_H       34
-#define PILL_R       9
+#define PILL_R       11
 #define PILL_PAD_X   12
-#define PILL_MAX_W   210
-#define PILL_GAP     8
+#define PILL_MAX_W   190
+#define PILL_GAP     7
 #define MAX_PILLS    4
-#define RADIUS       14
+#define TRAY_W       130
+#define TRAY_H       34
+#define POWER_D      34
 
-#define C_BAR_BG     "#171A21"
-#define C_BAR_BORDER "#323844"
-#define C_PILL_BG    "#222730"
-#define C_PILL_BD    "#353C49"
-#define C_PILL_FG    "#CAD0DB"
-#define C_ACT_BG     "#30394B"
-#define C_ACT_BD     "#637CA8"
-#define C_ACT_FG     "#F5F7FC"
-#define C_TEXT       "#E6E9F0"
-#define C_POWER_BG   "#33252B"
-#define C_POWER_BD   "#62404A"
-#define C_POWER_FG   "#E0717E"
-#define C_ICON       "#C8CEDA"
+#define C_BAR_BG      "#F7F8FA"
+#define C_BAR_BD      "#E2E6ED"
+#define C_PILL_ACT    "#FFFFFF"
+#define C_PILL_ACT_BD "#D8DCE3"
+#define C_PILL_FG_ACT "#1F2430"
+#define C_PILL_IDLE   "#ECEEF2"
+#define C_PILL_FG_IDLE "#6B7280"
+#define C_CLOCK       "#1F2430"
+#define C_TRAY_BG     "#E9ECF1"
+#define C_TRAY_BD     "#DDE1E8"
+#define C_ICON        "#4B5563"
+#define C_ICON_OFF    "#AEB6C2"
+#define C_POWER_BG    "#FBEAEC"
+#define C_POWER_BD    "#F3D0D5"
+#define C_POWER_FG    "#D04F61"
 
-#define FONT_UI  "Noto Sans CJK SC"
-#define FONT_ICON "Noto Sans Symbols 2"
+#define FONT_UI       "Noto Sans CJK SC"
 
-struct client {
-	int id;
-	char appid[64];
-	char title[192];
-	int focused;
-};
+struct client { int id; char appid[64]; char title[192]; int focused; int visible; };
+struct box { double x, y, w, h; };
 
 static struct wl_display *display;
 static struct wl_compositor *compositor;
@@ -69,11 +73,9 @@ static struct wl_output *output;
 static struct zwlr_layer_shell_v1 *layer_shell;
 static struct zwlr_layer_surface_v1 *layer_surface;
 static struct wl_surface *surface;
-static int buf_w, buf_h;
-static int scale = 2;
-static int out_w = 1280, out_h = 800;
-static int bar_w = 1280;
 
+static int scale = 2;
+static int bar_w = 1280, buf_w = 2560, buf_h = BAR_H * 2;
 static struct client clients[MAX_PILLS];
 static int nclients;
 static char clock_str[64];
@@ -83,7 +85,23 @@ static time_t power_armed_at = 0;
 static int dirty = 1;
 static int pointer_x = -1, pointer_y = -1;
 
+static char cmd_audio[256] = "foot -e alsamixer";
+static char cmd_network[256] = "foot -e nmtui";
+static char cmd_bluetooth[256] = "foot -e bluetoothctl";
+
+static struct box pill_box[MAX_PILLS];
+static int n_pill_boxes;
+static struct box power_box, tray_box, tray_icon[3];
+
+static void repaint(void);
+
 /* ------------------------------------------------------------------ util */
+
+static void set_hex(cairo_t *cr, const char *hex, double a) {
+	unsigned r = 0, g = 0, b = 0;
+	if (hex && hex[0] == '#') sscanf(hex + 1, "%2x%2x%2x", &r, &g, &b);
+	cairo_set_source_rgba(cr, r / 255.0, g / 255.0, b / 255.0, a);
+}
 
 static void rounded_rect(cairo_t *cr, double x, double y, double w, double h, double r) {
 	double d = M_PI / 180.0;
@@ -96,13 +114,26 @@ static void rounded_rect(cairo_t *cr, double x, double y, double w, double h, do
 	cairo_close_path(cr);
 }
 
-static void set_hex(cairo_t *cr, const char *hex, double a) {
-	unsigned r = 0, g = 0, b = 0;
-	if (hex && hex[0] == '#') sscanf(hex + 1, "%2x%2x%2x", &r, &g, &b);
-	cairo_set_source_rgba(cr, r / 255.0, g / 255.0, b / 255.0, a);
+/* Cairo silently drops every later drawing call once it is handed a string
+ * that is not valid UTF-8; window titles are outside our control. */
+static void sanitize_utf8(char *s) {
+	unsigned char *p = (unsigned char *)s;
+	while (*p) {
+		unsigned char c = *p;
+		int need;
+		if (c < 0x80) { p++; continue; }
+		else if ((c & 0xE0) == 0xC0) need = 1;
+		else if ((c & 0xF0) == 0xE0) need = 2;
+		else if ((c & 0xF8) == 0xF0) need = 3;
+		else { *p++ = '?'; continue; }
+		int ok = 1;
+		for (int i = 1; i <= need; i++)
+			if ((p[i] & 0xC0) != 0x80) { ok = 0; break; }
+		if (!ok) { *p++ = '?'; continue; }
+		p += need + 1;
+	}
 }
 
-/* run a command, capture stdout into buf (NUL terminated, newlines kept) */
 static int run_cmd(const char *cmd, char *buf, size_t len) {
 	buf[0] = 0;
 	FILE *f = popen(cmd, "r");
@@ -121,6 +152,27 @@ static void spawn(const char *cmd) {
 	}
 }
 
+static void load_actions(void) {
+	const char *home = getenv("HOME");
+	char path[512], line[512];
+	if (!home) return;
+	snprintf(path, sizeof path, "%s/.config/mango-bar/actions.conf", home);
+	FILE *f = fopen(path, "r");
+	if (!f) return;
+	while (fgets(line, sizeof line, f)) {
+		line[strcspn(line, "\r\n")] = 0;
+		char *eq = strchr(line, '=');
+		if (!eq) continue;
+		*eq = 0;
+		char *k = line, *v = eq + 1;
+		while (*v == ' ') v++;
+		if (!strcmp(k, "audio")) snprintf(cmd_audio, sizeof cmd_audio, "%s", v);
+		else if (!strcmp(k, "network")) snprintf(cmd_network, sizeof cmd_network, "%s", v);
+		else if (!strcmp(k, "bluetooth")) snprintf(cmd_bluetooth, sizeof cmd_bluetooth, "%s", v);
+	}
+	fclose(f);
+}
+
 /* --------------------------------------------------------------- data pull */
 
 static void json_str(const char *p, const char *key, char *out, size_t outlen) {
@@ -131,9 +183,10 @@ static void json_str(const char *p, const char *key, char *out, size_t outlen) {
 	const char *end = strchr(k, '"');
 	if (!end) return;
 	size_t n = (size_t)(end - k);
-	if (n >= outlen) n = outlen - 1;
+	if (n >= outlen - 1) n = outlen - 1;
 	memcpy(out, k, n);
 	out[n] = 0;
+	sanitize_utf8(out);
 }
 
 static void refresh_clients(void) {
@@ -145,13 +198,14 @@ static void refresh_clients(void) {
 	int n = 0;
 	const char *p = buf;
 	while (n < MAX_PILLS && (p = strstr(p, "{\"id\":")) != NULL) {
-		struct client *c = &got[n];
-		memset(c, 0, sizeof *c);
-		c->id = atoi(p + 6);
-		json_str(p, "\"title\":\"", c->title, sizeof c->title);
-		json_str(p, "\"appid\":\"", c->appid, sizeof c->appid);
-		c->focused = strstr(p, "\"is_focused\":true") != NULL;
-		n++;
+		struct client c;
+		memset(&c, 0, sizeof c);
+		c.id = atoi(p + 6);
+		json_str(p, "\"title\":\"", c.title, sizeof c.title);
+		json_str(p, "\"appid\":\"", c.appid, sizeof c.appid);
+		c.focused = strstr(p, "\"is_focused\":true") != NULL;
+		c.visible = strstr(p, "\"is_visible\":true") != NULL;
+		if (c.visible) got[n++] = c;
 		p += 6;
 	}
 
@@ -161,7 +215,7 @@ static void refresh_clients(void) {
 			  strcmp(got[i].title, clients[i].title) != 0 ||
 			  strcmp(got[i].appid, clients[i].appid) != 0;
 	if (changed) {
-		memcpy(clients, got, sizeof(struct client) * n);
+		memcpy(clients, got, sizeof(struct client) * (size_t)n);
 		nclients = n;
 		dirty = 1;
 	}
@@ -175,20 +229,12 @@ static void refresh_status(void) {
 		if (sscanf(buf, "Volume: %f", &f) == 1) v = (int)lroundf(f * 100.0f);
 		mute = strstr(buf, "MUTED") != NULL;
 	}
-	if (v < 0) {
-		if (run_cmd("pactl get-sink-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null", buf, sizeof buf) > 0) {
-			char *pc = strchr(buf, '/');
-			if (pc) v = atoi(pc + 1);
-		}
-	}
 	if (v < 0) v = 0;
 
 	struct stat st;
 	int wifi = (stat("/sys/class/net/wlp1s0", &st) == 0);
-	if (wifi) {
-		if (run_cmd("cat /sys/class/net/wlp1s0/operstate 2>/dev/null", buf, sizeof buf) > 0)
-			wifi = strstr(buf, "up") != NULL;
-	}
+	if (wifi && run_cmd("cat /sys/class/net/wlp1s0/operstate 2>/dev/null", buf, sizeof buf) > 0)
+		wifi = strstr(buf, "up") != NULL;
 	int bt = (stat("/sys/class/bluetooth/hci0", &st) == 0);
 
 	if (v != vol_pct || mute != vol_mute || wifi != wifi_on || bt != bt_on) {
@@ -211,88 +257,11 @@ static void refresh_clock(void) {
 	}
 }
 
-/* --------------------------------------------------------------- geometry */
-
-struct geom { double x, y, w, h; };
-
-
-static void repaint(void);
-
-static struct geom pill_box[MAX_PILLS];
-static struct geom power_box, status_box;
-static int n_pill_boxes;
-
-static int inside(struct geom *g, double x, double y) {
-	return x >= g->x && x <= g->x + g->w && y >= g->y && y <= g->y + g->h;
-}
-
 /* --------------------------------------------------------------- drawing */
 
-static void draw_icon_speaker(cairo_t *cr, double cx, double cy) {
-	set_hex(cr, C_ICON, 1);
-	cairo_set_line_width(cr, 1.6);
-	cairo_move_to(cr, cx - 6, cy - 2.5);
-	cairo_line_to(cr, cx - 3, cy - 2.5);
-	cairo_line_to(cr, cx + 0.5, cy - 6);
-	cairo_line_to(cr, cx + 0.5, cy + 6);
-	cairo_line_to(cr, cx - 3, cy + 2.5);
-	cairo_line_to(cr, cx - 6, cy + 2.5);
-	cairo_close_path(cr);
-	cairo_fill(cr);
-	if (!vol_mute) {
-		cairo_arc(cr, cx + 1, cy, 4.5, -0.9, 0.9);
-		cairo_stroke(cr);
-		if (vol_pct > 45) {
-			cairo_arc(cr, cx + 1, cy, 8, -0.8, 0.8);
-			cairo_stroke(cr);
-		}
-	} else {
-		cairo_move_to(cr, cx + 2, cy - 4);
-		cairo_line_to(cr, cx + 9, cy + 4);
-		cairo_move_to(cr, cx + 9, cy - 4);
-		cairo_line_to(cr, cx + 2, cy + 4);
-		cairo_stroke(cr);
-	}
-}
-
-static void draw_icon_wifi(cairo_t *cr, double cx, double cy) {
-	set_hex(cr, wifi_on ? C_ICON : "#5A6270", 1);
-	cairo_set_line_width(cr, 1.6);
-	if (wifi_on) {
-		cairo_arc(cr, cx, cy + 5, 8, -2.35, -0.79);
-		cairo_stroke(cr);
-		cairo_arc(cr, cx, cy + 5, 4.5, -2.35, -0.79);
-		cairo_stroke(cr);
-	}
-	cairo_arc(cr, cx, cy + 4.5, 1.4, 0, 2 * M_PI);
-	cairo_fill(cr);
-}
-
-static void draw_icon_bt(cairo_t *cr, double cx, double cy) {
-	set_hex(cr, bt_on ? C_ICON : "#5A6270", 1);
-	cairo_set_line_width(cr, 1.6);
-	cairo_move_to(cr, cx - 4, cy - 3);
-	cairo_line_to(cr, cx + 4, cy + 4);
-	cairo_line_to(cr, cx, cy + 7);
-	cairo_line_to(cr, cx, cy - 7);
-	cairo_line_to(cr, cx + 4, cy - 4);
-	cairo_line_to(cr, cx - 4, cy + 3);
-	cairo_stroke(cr);
-}
-
-static void draw_icon_power(cairo_t *cr, double cx, double cy) {
-	set_hex(cr, power_armed ? "#FFFFFF" : C_POWER_FG, 1);
-	cairo_set_line_width(cr, 1.8);
-	cairo_arc(cr, cx, cy + 1, 6.5, -M_PI / 2 + 0.6, 3 * M_PI / 2 - 0.6);
-	cairo_stroke(cr);
-	cairo_move_to(cr, cx, cy - 8);
-	cairo_line_to(cr, cx, cy - 1);
-	cairo_stroke(cr);
-}
-
-static void draw_text(cairo_t *cr, const char *txt, const char *font, double size,
-		      const char *color, double x, double y, int center) {
-	cairo_select_font_face(cr, font, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+static void text_at(cairo_t *cr, const char *txt, double size, const char *color,
+		    double x, double y, int center) {
+	cairo_select_font_face(cr, FONT_UI, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
 	cairo_set_font_size(cr, size);
 	cairo_text_extents_t te;
 	cairo_text_extents(cr, txt, &te);
@@ -301,19 +270,124 @@ static void draw_text(cairo_t *cr, const char *txt, const char *font, double siz
 	cairo_show_text(cr, txt);
 }
 
-static void ellipsize(cairo_t *cr, const char *in, double maxw, double size, char *out, size_t outlen) {
+static double text_width(cairo_t *cr, const char *txt, double size) {
 	cairo_select_font_face(cr, FONT_UI, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
 	cairo_set_font_size(cr, size);
-	snprintf(out, outlen, "%s", in);
 	cairo_text_extents_t te;
-	cairo_text_extents(cr, out, &te);
-	if (te.width <= maxw) return;
-	for (size_t n = strlen(out); n > 1; n--) {
-		out[n] = 0;
-		char tmp[256];
+	cairo_text_extents(cr, txt, &te);
+	return te.width;
+}
+
+/* byte-wise truncation must not split a multi-byte character either */
+static void ellipsize(cairo_t *cr, const char *in, double maxw, double size, char *out, size_t outlen) {
+	snprintf(out, outlen, "%s", in);
+	if (text_width(cr, out, size) <= maxw) return;
+	size_t n = strlen(out);
+	while (n > 1) {
+		out[--n] = 0;
+		sanitize_utf8(out);
+		char tmp[320];
 		snprintf(tmp, sizeof tmp, "%s…", out);
-		cairo_text_extents(cr, tmp, &te);
-		if (te.width <= maxw) { snprintf(out, outlen, "%s", tmp); return; }
+		if (text_width(cr, tmp, size) <= maxw) { snprintf(out, outlen, "%s", tmp); return; }
+	}
+}
+
+static void draw_speaker(cairo_t *cr, double cx, double cy, int on, int mute) {
+	set_hex(cr, on ? C_ICON : C_ICON_OFF, 1);
+	cairo_set_line_width(cr, 1.5);
+	cairo_move_to(cr, cx - 6, cy - 2.5);
+	cairo_line_to(cr, cx - 3, cy - 2.5);
+	cairo_line_to(cr, cx + 0.5, cy - 6);
+	cairo_line_to(cr, cx + 0.5, cy + 6);
+	cairo_line_to(cr, cx - 3, cy + 2.5);
+	cairo_line_to(cr, cx - 6, cy + 2.5);
+	cairo_close_path(cr);
+	cairo_fill(cr);
+	if (mute) {
+		cairo_move_to(cr, cx + 2.5, cy - 4);
+		cairo_line_to(cr, cx + 8.5, cy + 4);
+		cairo_move_to(cr, cx + 8.5, cy - 4);
+		cairo_line_to(cr, cx + 2.5, cy + 4);
+		cairo_stroke(cr);
+	} else {
+		cairo_arc(cr, cx + 1, cy, 4.2, -0.9, 0.9);
+		cairo_stroke(cr);
+		if (vol_pct > 45) {
+			cairo_arc(cr, cx + 1, cy, 7.6, -0.8, 0.8);
+			cairo_stroke(cr);
+		}
+	}
+}
+
+static void draw_wifi(cairo_t *cr, double cx, double cy, int on) {
+	set_hex(cr, on ? C_ICON : C_ICON_OFF, 1);
+	cairo_set_line_width(cr, 1.5);
+	if (on) {
+		cairo_arc(cr, cx, cy + 5, 7.4, -2.35, -0.79);
+		cairo_stroke(cr);
+		cairo_arc(cr, cx, cy + 5, 4.2, -2.35, -0.79);
+		cairo_stroke(cr);
+	}
+	cairo_arc(cr, cx, cy + 4.4, 1.3, 0, 2 * M_PI);
+	cairo_fill(cr);
+}
+
+static void draw_bt(cairo_t *cr, double cx, double cy, int on) {
+	set_hex(cr, on ? C_ICON : C_ICON_OFF, 1);
+	cairo_set_line_width(cr, 1.5);
+	cairo_move_to(cr, cx - 3.6, cy - 3);
+	cairo_line_to(cr, cx + 3.6, cy + 3.6);
+	cairo_line_to(cr, cx, cy + 6.4);
+	cairo_line_to(cr, cx, cy - 6.4);
+	cairo_line_to(cr, cx + 3.6, cy - 3.6);
+	cairo_line_to(cr, cx - 3.6, cy + 3);
+	cairo_stroke(cr);
+}
+
+static void draw_power(cairo_t *cr, double cx, double cy) {
+	set_hex(cr, C_POWER_FG, 1);
+	cairo_set_line_width(cr, 1.8);
+	cairo_arc(cr, cx, cy + 1, 6, -M_PI / 2 + 0.65, 3 * M_PI / 2 - 0.65);
+	cairo_stroke(cr);
+	cairo_move_to(cr, cx, cy - 7.5);
+	cairo_line_to(cr, cx, cy - 1);
+	cairo_stroke(cr);
+}
+
+static void draw_pills(cairo_t *cr, double W, double cy) {
+	n_pill_boxes = 0;
+	double x = EDGE + 6;
+	for (int i = 0; i < nclients && i < MAX_PILLS; i++) {
+		char label[320], shown[320];
+		snprintf(label, sizeof label, "%s · %s",
+			 clients[i].appid[0] ? clients[i].appid : "window", clients[i].title);
+		sanitize_utf8(label);
+		ellipsize(cr, label, PILL_MAX_W - 2 * PILL_PAD_X, 14.5, shown, sizeof shown);
+		sanitize_utf8(shown);
+		double tw = text_width(cr, shown, 14.5);
+		double w = tw + 2 * PILL_PAD_X;
+		if (w > PILL_MAX_W) w = PILL_MAX_W;
+		if (x + w > W - (TRAY_W + POWER_D + 40)) break;
+
+		pill_box[n_pill_boxes].x = x;
+		pill_box[n_pill_boxes].y = cy - PILL_H / 2.0;
+		pill_box[n_pill_boxes].w = w;
+		pill_box[n_pill_boxes].h = PILL_H;
+		n_pill_boxes++;
+
+		set_hex(cr, clients[i].focused ? C_PILL_ACT : C_PILL_IDLE, 1);
+		rounded_rect(cr, x, cy - PILL_H / 2.0, w, PILL_H, PILL_R);
+		cairo_fill_preserve(cr);
+		if (clients[i].focused) {
+			set_hex(cr, C_PILL_ACT_BD, 1);
+			cairo_set_line_width(cr, 1);
+			cairo_stroke(cr);
+		} else {
+			cairo_new_path(cr);
+		}
+		text_at(cr, shown, 14.5, clients[i].focused ? C_PILL_FG_ACT : C_PILL_FG_IDLE,
+			x + PILL_PAD_X, cy + 5, 0);
+		x += w + PILL_GAP;
 	}
 }
 
@@ -329,84 +403,74 @@ static void draw(unsigned char *fb) {
 	cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
 
 	double W = bar_w;
+	double y0 = EDGE, h = BAR_H_INNER;
+	double cy = y0 + h / 2.0;
 
-	/* bar background */
-	set_hex(cr, C_BAR_BG, 0.94);
-	rounded_rect(cr, 0.5, 0.5, W - 1, BAR_H - 1, RADIUS);
+	set_hex(cr, C_BAR_BG, 1);
+	rounded_rect(cr, 0.5, y0 + 0.5, W - 1, h - 1, RADIUS);
 	cairo_fill_preserve(cr);
-	set_hex(cr, C_BAR_BORDER, 1);
+	set_hex(cr, C_BAR_BD, 1);
 	cairo_set_line_width(cr, 1);
 	cairo_stroke(cr);
 
-	/* ---- left: window pills ---- */
-	n_pill_boxes = 0;
-	double x = PAD;
-	for (int i = 0; i < nclients && i < MAX_PILLS; i++) {
-		char label[256];
-		snprintf(label, sizeof label, "%s · %s",
-			 clients[i].appid[0] ? clients[i].appid : "window", clients[i].title);
-		char shown[256];
-		ellipsize(cr, label, PILL_MAX_W - 2 * PILL_PAD_X, 14, shown, sizeof shown);
-		cairo_select_font_face(cr, FONT_UI, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
-		cairo_set_font_size(cr, 14);
-		cairo_text_extents_t te;
-		cairo_text_extents(cr, shown, &te);
-		double w = te.width + 2 * PILL_PAD_X;
-		if (w > PILL_MAX_W) w = PILL_MAX_W;
-		if (x + w > W - 320) break;
+	draw_pills(cr, W, cy);
 
-		pill_box[n_pill_boxes].x = x;
-		pill_box[n_pill_boxes].y = (BAR_H - PILL_H) / 2.0;
-		pill_box[n_pill_boxes].w = w;
-		pill_box[n_pill_boxes].h = PILL_H;
-		n_pill_boxes++;
-
-		set_hex(cr, clients[i].focused ? C_ACT_BG : C_PILL_BG, 1);
-		rounded_rect(cr, x, (BAR_H - PILL_H) / 2.0, w, PILL_H, PILL_R);
-		cairo_fill_preserve(cr);
-		set_hex(cr, clients[i].focused ? C_ACT_BD : C_PILL_BD, 1);
-		cairo_set_line_width(cr, 1);
-		cairo_stroke(cr);
-
-		draw_text(cr, shown, FONT_UI, 14, clients[i].focused ? C_ACT_FG : C_PILL_FG,
-			  x + PILL_PAD_X, BAR_H / 2.0 + 5, 0);
-		x += w + PILL_GAP;
+	/* a client title can still put cairo into an error state; heal it so the
+	 * clock / tray / power button always get drawn */
+	if (cairo_status(cr) != CAIRO_STATUS_SUCCESS) {
+		cairo_destroy(cr);
+		cr = cairo_create(cs);
+		cairo_scale(cr, scale, scale);
 	}
 
-	/* ---- centre: clock ---- */
-	draw_text(cr, clock_str, FONT_UI, 15, C_TEXT, W / 2.0, BAR_H / 2.0 + 5.5, 1);
+	text_at(cr, clock_str, 15, C_CLOCK, W / 2.0, cy + 5.5, 1);
 
-	/* ---- right: status pill + power ---- */
-	double pw = 38;
-	double px = W - PAD - pw;
-	power_box.x = px; power_box.y = (BAR_H - pw) / 2.0; power_box.w = pw; power_box.h = pw;
-
+	/* power button */
+	double px = W - EDGE - 6 - POWER_D;
+	power_box.x = px; power_box.y = cy - POWER_D / 2.0;
+	power_box.w = POWER_D; power_box.h = POWER_D;
+	set_hex(cr, power_armed ? C_POWER_FG : C_POWER_BG, 1);
+	rounded_rect(cr, power_box.x, power_box.y, POWER_D, POWER_D, POWER_D / 2);
+	cairo_fill_preserve(cr);
+	set_hex(cr, power_armed ? C_POWER_FG : C_POWER_BD, 1);
+	cairo_set_line_width(cr, 1);
+	cairo_stroke(cr);
 	if (power_armed) {
-		set_hex(cr, "#8E3B48", 1);
-		rounded_rect(cr, px, (BAR_H - pw) / 2.0, pw, pw, pw / 2);
-		cairo_fill(cr);
-	} else {
-		set_hex(cr, C_POWER_BG, 1);
-		rounded_rect(cr, px, (BAR_H - pw) / 2.0, pw, pw, pw / 2);
-		cairo_fill_preserve(cr);
-		set_hex(cr, C_POWER_BD, 1);
-		cairo_set_line_width(cr, 1);
+		cairo_set_source_rgba(cr, 1, 1, 1, 1);
+		cairo_set_line_width(cr, 1.8);
+		cairo_arc(cr, px + POWER_D / 2, cy + 1, 6, -M_PI / 2 + 0.65, 3 * M_PI / 2 - 0.65);
 		cairo_stroke(cr);
+		cairo_move_to(cr, px + POWER_D / 2, cy - 7.5);
+		cairo_line_to(cr, px + POWER_D / 2, cy - 1);
+		cairo_stroke(cr);
+	} else {
+		draw_power(cr, px + POWER_D / 2, cy);
 	}
-	draw_icon_power(cr, px + pw / 2, BAR_H / 2.0);
 
-	double sw = 132, sh = 38;
-	double sx = px - 8 - sw;
-	status_box.x = sx; status_box.y = (BAR_H - sh) / 2.0; status_box.w = sw; status_box.h = sh;
-	set_hex(cr, "#272D37", 1);
-	rounded_rect(cr, sx, (BAR_H - sh) / 2.0, sw, sh, sh / 2);
+	/* tray pill with three separate targets */
+	double tx = px - 8 - TRAY_W;
+	tray_box.x = tx; tray_box.y = cy - TRAY_H / 2.0;
+	tray_box.w = TRAY_W; tray_box.h = TRAY_H;
+	set_hex(cr, C_TRAY_BG, 1);
+	rounded_rect(cr, tray_box.x, tray_box.y, TRAY_W, TRAY_H, TRAY_H / 2);
 	cairo_fill_preserve(cr);
-	set_hex(cr, "#434B59", 1);
+	set_hex(cr, C_TRAY_BD, 1);
 	cairo_set_line_width(cr, 1);
 	cairo_stroke(cr);
-	draw_icon_speaker(cr, sx + 28, BAR_H / 2.0);
-	draw_icon_wifi(cr, sx + 66, BAR_H / 2.0);
-	draw_icon_bt(cr, sx + 104, BAR_H / 2.0);
+
+	double iw = TRAY_W / 3.0;
+	for (int i = 0; i < 3; i++) {
+		tray_icon[i].x = tx + i * iw;
+		tray_icon[i].y = tray_box.y;
+		tray_icon[i].w = iw;
+		tray_icon[i].h = TRAY_H;
+	}
+	draw_speaker(cr, tray_icon[0].x + iw / 2, cy, 1, vol_mute);
+	draw_wifi(cr, tray_icon[1].x + iw / 2, cy, wifi_on);
+	draw_bt(cr, tray_icon[2].x + iw / 2, cy, bt_on);
+
+	{ const char *dump = getenv("MANGO_BAR_DUMP");
+	  if (dump) cairo_surface_write_to_png(cs, dump); }
 
 	cairo_destroy(cr);
 	cairo_surface_destroy(cs);
@@ -415,17 +479,8 @@ static void draw(unsigned char *fb) {
 
 /* ------------------------------------------------------------------ shm */
 
-/* Two rotating shm buffers: a compositor only releases a buffer once a newer
- * one replaces it, so a single buffer would deadlock after the first frame. */
 #define NBUF 2
-
-struct shmbuf {
-	struct wl_buffer *wl;
-	unsigned char *px;
-	int w, h;
-	int busy;
-};
-
+struct shmbuf { struct wl_buffer *wl; unsigned char *px; int w, h, busy; };
 static struct shmbuf bufs[NBUF];
 static int cur_buf;
 
@@ -433,10 +488,7 @@ static void shmbuf_release(void *data, struct wl_buffer *wl) {
 	struct shmbuf *b = data;
 	wl_buffer_destroy(wl);
 	b->wl = NULL;
-	if (b->px) {
-		munmap(b->px, (size_t)b->w * b->h * 4);
-		b->px = NULL;
-	}
+	if (b->px) { munmap(b->px, (size_t)b->w * b->h * 4); b->px = NULL; }
 	b->busy = 0;
 }
 static const struct wl_buffer_listener buffer_listener = { shmbuf_release };
@@ -444,8 +496,7 @@ static const struct wl_buffer_listener buffer_listener = { shmbuf_release };
 static int shmbuf_prepare(struct shmbuf *b, int w, int h) {
 	if (b->wl && b->w == w && b->h == h) return 1;
 	if (b->busy) return 0;
-	int stride = w * 4;
-	int size = stride * h;
+	int stride = w * 4, size = stride * h;
 	int fd = memfd_create("mango-bar", MFD_CLOEXEC);
 	if (fd < 0) return 0;
 	if (ftruncate(fd, (off_t)size) < 0) { close(fd); return 0; }
@@ -455,17 +506,32 @@ static int shmbuf_prepare(struct shmbuf *b, int w, int h) {
 	b->wl = wl_shm_pool_create_buffer(pool, 0, w, h, stride, WL_SHM_FORMAT_ARGB8888);
 	wl_shm_pool_destroy(pool);
 	close(fd);
-	b->w = w;
-	b->h = h;
+	b->w = w; b->h = h;
 	wl_buffer_add_listener(b->wl, &buffer_listener, b);
 	return 1;
+}
+
+static void repaint(void) {
+	for (int tries = 0; tries < NBUF; tries++) {
+		struct shmbuf *b = &bufs[cur_buf];
+		cur_buf = (cur_buf + 1) % NBUF;
+		if (b->busy) continue;
+		if (!shmbuf_prepare(b, buf_w, buf_h)) continue;
+		draw(b->px);
+		wl_surface_attach(surface, b->wl, 0, 0);
+		wl_surface_set_buffer_scale(surface, scale);
+		wl_surface_damage_buffer(surface, 0, 0, buf_w, buf_h);
+		wl_surface_commit(surface);
+		b->busy = 1;
+		return;
+	}
 }
 
 static void layer_configure(void *data, struct zwlr_layer_surface_v1 *ls,
 			    uint32_t serial, uint32_t w, uint32_t h) {
 	(void)data; (void)h;
-	bar_w = (int)w;
-	buf_w = (int)w * scale;
+	if (w > 0) bar_w = (int)w;
+	buf_w = bar_w * scale;
 	buf_h = BAR_H * scale;
 	zwlr_layer_surface_v1_ack_configure(ls, serial);
 	dirty = 1;
@@ -484,22 +550,8 @@ static const struct zwlr_layer_surface_v1_listener layer_listener = {
 
 /* ----------------------------------------------------------------- input */
 
-static void repaint(void) {
-	for (int tries = 0; tries < NBUF; tries++) {
-		struct shmbuf *b = &bufs[cur_buf];
-		int idx = cur_buf;
-		cur_buf = (cur_buf + 1) % NBUF;
-		if (b->busy) continue;
-		if (!shmbuf_prepare(b, buf_w, buf_h)) continue;
-		draw(b->px);
-		wl_surface_attach(surface, b->wl, 0, 0);
-		wl_surface_set_buffer_scale(surface, scale);
-		wl_surface_damage_buffer(surface, 0, 0, buf_w, buf_h);
-		wl_surface_commit(surface);
-		b->busy = 1;
-		(void)idx;
-		return;
-	}
+static int inside(const struct box *b, double x, double y) {
+	return x >= b->x && x <= b->x + b->w && y >= b->y && y <= b->y + b->h;
 }
 
 static void pointer_enter(void *d, struct wl_pointer *p, uint32_t serial,
@@ -522,7 +574,7 @@ static void pointer_motion(void *d, struct wl_pointer *p, uint32_t t, wl_fixed_t
 
 static void pointer_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t t,
 			   uint32_t button, uint32_t state) {
-	(void)d; (void)p; (void)t; (void)button;
+	(void)d; (void)p; (void)t; (void)button; (void)serial;
 	if (state != WL_POINTER_BUTTON_STATE_PRESSED) return;
 
 	double x = pointer_x, y = pointer_y;
@@ -531,7 +583,8 @@ static void pointer_button(void *d, struct wl_pointer *p, uint32_t serial, uint3
 		if (inside(&pill_box[i], x, y)) {
 			char cmd[256];
 			snprintf(cmd, sizeof cmd,
-				 "/usr/local/bin/mango-dispatch dispatch focusid client,%d >/dev/null 2>&1", clients[i].id);
+				 "/usr/local/bin/mango-dispatch dispatch focusid client,%d >/dev/null 2>&1",
+				 clients[i].id);
 			spawn(cmd);
 			return;
 		}
@@ -553,9 +606,11 @@ static void pointer_button(void *d, struct wl_pointer *p, uint32_t serial, uint3
 		return;
 	}
 
-	if (inside(&status_box, x, y)) {
-		spawn("/usr/local/bin/mango-volume mute-toggle >/dev/null 2>&1 || wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle");
-		return;
+	for (int i = 0; i < 3; i++) {
+		if (inside(&tray_icon[i], x, y)) {
+			spawn(i == 0 ? cmd_audio : i == 1 ? cmd_network : cmd_bluetooth);
+			return;
+		}
 	}
 }
 
@@ -564,11 +619,6 @@ static const struct wl_pointer_listener pointer_listener = {
 	.leave = pointer_leave,
 	.motion = pointer_motion,
 	.button = pointer_button,
-	.axis = NULL,
-	.frame = NULL,
-	.axis_source = NULL,
-	.axis_stop = NULL,
-	.axis_discrete = NULL,
 };
 
 static void seat_capabilities(void *d, struct wl_seat *s, uint32_t caps) {
@@ -579,10 +629,7 @@ static void seat_capabilities(void *d, struct wl_seat *s, uint32_t caps) {
 	}
 }
 
-static const struct wl_seat_listener seat_listener = {
-	.capabilities = seat_capabilities,
-	.name = NULL,
-};
+static const struct wl_seat_listener seat_listener = { .capabilities = seat_capabilities };
 
 static void output_geometry(void *d, struct wl_output *o, int32_t x, int32_t y,
 			    int32_t pw, int32_t ph, int32_t sub, const char *make,
@@ -591,8 +638,7 @@ static void output_geometry(void *d, struct wl_output *o, int32_t x, int32_t y,
 	(void)make; (void)model; (void)transform;
 }
 static void output_mode(void *d, struct wl_output *o, uint32_t flags, int32_t w, int32_t h, int32_t refresh) {
-	(void)d; (void)o; (void)flags; (void)refresh;
-	if (w > 0 && h > 0) { out_w = w; out_h = h; }
+	(void)d; (void)o; (void)flags; (void)refresh; (void)w; (void)h;
 }
 static void output_done(void *d, struct wl_output *o) { (void)d; (void)o; }
 static void output_scale(void *d, struct wl_output *o, int32_t s) {
@@ -618,8 +664,7 @@ static void registry_global(void *data, struct wl_registry *reg, uint32_t name,
 	else if (!strcmp(iface, zwlr_layer_shell_v1_interface.name))
 		layer_shell = wl_registry_bind(reg, name, &zwlr_layer_shell_v1_interface, 1);
 }
-
-static void registry_remove(void *d, struct wl_registry *r, uint32_t name) { (void)d; (void)r; (void)name; }
+static void registry_remove(void *d, struct wl_registry *r, uint32_t n) { (void)d; (void)r; (void)n; }
 static const struct wl_registry_listener registry_listener = {
 	.global = registry_global, .global_remove = registry_remove,
 };
@@ -633,6 +678,8 @@ int main(void) {
 	signal(SIGTERM, on_term);
 	signal(SIGINT, on_term);
 	signal(SIGCHLD, SIG_IGN);
+
+	load_actions();
 
 	display = wl_display_connect(NULL);
 	if (!display) { fprintf(stderr, "mango-bar: cannot connect to the compositor\n"); return 1; }
@@ -674,8 +721,7 @@ int main(void) {
 		wl_display_flush(display);
 
 		struct pollfd pfd = { .fd = wfd, .events = POLLIN };
-		int pr = poll(&pfd, 1, 250);
-		if (pr > 0 && (pfd.revents & POLLIN)) {
+		if (poll(&pfd, 1, 250) > 0 && (pfd.revents & POLLIN)) {
 			if (wl_display_dispatch(display) < 0) break;
 		}
 
