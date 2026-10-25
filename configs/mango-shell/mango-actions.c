@@ -119,7 +119,7 @@ static int ipc_connect(void) {
 
 /* Fire-and-forget: a drag sends one command per motion event, so connecting
  * and waiting for a reply every time made dragging crawl. */
-static void cmd(const char *fmt, ...) {
+static int cmd(const char *fmt, ...) {
 	char b[512];
 	va_list ap;
 	va_start(ap, fmt);
@@ -127,15 +127,17 @@ static void cmd(const char *fmt, ...) {
 	va_end(ap);
 	int fd = ipc_connect();
 	if (fd < 0)
-		return;
+		return 0;
 	size_t len = strlen(b);
 	if (len + 2 >= sizeof b)
-		return;
+		return 0;
 	b[len++] = '\n';
 	if (send(fd, b, len, MSG_NOSIGNAL) != (ssize_t)len) {
 		close(fd);
 		ipc_fd = -1;   /* reconnect on the next command */
+		return 0;
 	}
+	return 1;
 }
 
 /* ------------------------------------------------------------- drawing */
@@ -278,7 +280,26 @@ static void draw(void) {
 		if (x1 > x0 && y1 > y0)
 			wl_surface_damage_buffer(surface, (int32_t)(x0 * scale), (int32_t)(y0 * scale),
 					  (int32_t)((x1 - x0) * scale), (int32_t)((y1 - y0) * scale));
-		wl_surface_damage_buffer(surface, (win_w - 168) * scale, 8 * scale, 168 * scale, 66 * scale);
+		/* the action buttons follow the selection, so both their previous and
+		 * current boxes have to be repainted or they leave ghosts behind */
+		double bx0 = 1e9, by0 = 1e9, bx1 = -1e9, by1 = -1e9;
+		for (int i = 0; i < NBUTTONS; i++) {
+			if (btn_x[i] < -1e8)
+				continue;
+			if (btn_x[i] - 8 < bx0) bx0 = btn_x[i] - 8;
+			if (btn_y[i] - 8 < by0) by0 = btn_y[i] - 8;
+			if (btn_x[i] + BTN + 8 > bx1) bx1 = btn_x[i] + BTN + 8;
+			if (btn_y[i] + BTN + 8 > by1) by1 = btn_y[i] + BTN + 8;
+		}
+		if (bx1 > bx0)
+			wl_surface_damage_buffer(surface, (int32_t)(bx0 * scale), (int32_t)(by0 * scale),
+					  (int32_t)((bx1 - bx0) * scale), (int32_t)((by1 - by0) * scale));
+		static double pbx0, pby0, pbx1, pby1;
+		static int pb_ok;
+		if (pb_ok && pbx1 > pbx0)
+			wl_surface_damage_buffer(surface, (int32_t)(pbx0 * scale), (int32_t)(pby0 * scale),
+					  (int32_t)((pbx1 - pbx0) * scale), (int32_t)((pby1 - pby0) * scale));
+		pbx0 = bx0; pby0 = by0; pbx1 = bx1; pby1 = by1; pb_ok = 1;
 	}
 	prev_x = sel_x;
 	prev_y = sel_y;
@@ -485,14 +506,13 @@ static double acc_mx, acc_my, acc_rx, acc_ry;
 static void flush_move(void) {
 	if (!sel_id)
 		return;
-	if (acc_mx || acc_my) {
-		cmd("dispatch movewin,%+d,%+d client,%d", (int)acc_mx, (int)acc_my, sel_id);
+	if ((acc_mx || acc_my) &&
+	    cmd("dispatch movewin,%+d,%+d client,%d", (int)acc_mx, (int)acc_my, sel_id))
 		acc_mx = acc_my = 0;
-	}
-	if (acc_rx || acc_ry) {
-		cmd("dispatch resizewin,%+d,%+d client,%d", (int)acc_rx, (int)acc_ry, sel_id);
+	if ((acc_rx || acc_ry) &&
+	    cmd("dispatch resizewin,%+d,%+d client,%d", (int)acc_rx, (int)acc_ry, sel_id))
 		acc_rx = acc_ry = 0;
-	}
+	cmd_allowed();   /* keep the 10 ms gate even when a send failed */
 }
 
 static void on_motion(double x, double y) {
