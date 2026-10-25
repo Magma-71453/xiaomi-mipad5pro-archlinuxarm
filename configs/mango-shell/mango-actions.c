@@ -61,6 +61,7 @@ static double sel_x, sel_y, sel_w, sel_h;
 static double btn_x[NBUTTONS], btn_y[NBUTTONS];   /* top-left of each button */
 static double hx[4], hy[4];                        /* corner handle centres */
 static int btn_hover = -1;
+static int want_full_damage = 1;   /* full repaint at the start/end of a gesture */
 static int dragging;
 static int resizing;
 static int corner = -1;          /* 0 TL, 1 TR, 2 BL, 3 BR while dragging */
@@ -97,47 +98,36 @@ static int ipc(const char *command, char *out, size_t outsz) {
 	return (int)used;
 }
 
-static int ipc_fd = -1;
-
-static int ipc_connect(void) {
-	if (ipc_fd >= 0)
-		return ipc_fd;
-	if (!sock_path[0])
-		return -1;
-	int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-	if (fd < 0)
-		return -1;
-	struct sockaddr_un addr = { .sun_family = AF_UNIX };
-	snprintf(addr.sun_path, sizeof addr.sun_path, "%s", sock_path);
-	if (connect(fd, (struct sockaddr *)&addr, sizeof addr) < 0) {
-		close(fd);
-		return -1;
-	}
-	ipc_fd = fd;
-	return fd;
-}
-
-/* Fire-and-forget: a drag sends one command per motion event, so connecting
- * and waiting for a reply every time made dragging crawl. */
+/* Fire-and-forget.  mango closes the connection after every command, so a
+ * long-lived socket silently swallowed the following commands (the close /
+ * fullscreen buttons stopped working); reconnecting per command is cheap on a
+ * unix socket, and dropping the reply wait is what made dragging smooth. */
 static int cmd(const char *fmt, ...) {
 	char b[512];
 	va_list ap;
 	va_start(ap, fmt);
 	vsnprintf(b, sizeof b, fmt, ap);
 	va_end(ap);
-	int fd = ipc_connect();
+	if (!sock_path[0])
+		return 0;
+	int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
 	if (fd < 0)
 		return 0;
-	size_t len = strlen(b);
-	if (len + 2 >= sizeof b)
-		return 0;
-	b[len++] = '\n';
-	if (send(fd, b, len, MSG_NOSIGNAL) != (ssize_t)len) {
+	struct sockaddr_un addr = { .sun_family = AF_UNIX };
+	snprintf(addr.sun_path, sizeof addr.sun_path, "%s", sock_path);
+	if (connect(fd, (struct sockaddr *)&addr, sizeof addr) < 0) {
 		close(fd);
-		ipc_fd = -1;   /* reconnect on the next command */
 		return 0;
 	}
-	return 1;
+	size_t len = strlen(b);
+	if (len + 2 >= sizeof b) {
+		close(fd);
+		return 0;
+	}
+	b[len++] = '\n';
+	int ok = send(fd, b, len, MSG_NOSIGNAL) == (ssize_t)len;
+	close(fd);
+	return ok;
 }
 
 /* ------------------------------------------------------------- drawing */
@@ -267,7 +257,8 @@ static void draw(void) {
 	 * change. */
 	static double prev_x, prev_y, prev_w, prev_h;
 	static int have_prev;
-	if (!have_prev || sel_id == 0 || prev_w <= 0) {
+	if (!have_prev || sel_id == 0 || prev_w <= 0 || want_full_damage) {
+		want_full_damage = 0;
 		wl_surface_damage_buffer(surface, 0, 0, win_w * scale, win_h * scale);
 	} else {
 		double x0 = fmin(prev_x, sel_x) - 30, y0 = fmin(prev_y, sel_y) - 30;
@@ -436,6 +427,7 @@ static int cmd_allowed(void) {
 }
 
 static void on_press(double x, double y) {
+	want_full_damage = 1;
 	if (getenv("ACT_DEBUG"))
 		fprintf(stderr, "press %.0f,%.0f active=%d sel=%d\n", x, y, active, sel_id);
 	if (!active) return;
@@ -596,6 +588,9 @@ static void on_release(void) {
 	dragging = 0;
 	resizing = 0;
 	corner = -1;
+	/* clear whatever the partial updates left behind */
+	want_full_damage = 1;
+	draw();
 }
 
 /* ------------------------------------------------------------ wayland glue */
