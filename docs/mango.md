@@ -326,7 +326,7 @@ mango 的键盘绑定按 keysym 匹配，而内部音量键经当前 keymap **�
 
 | 文件 | 作用 |
 |---|---|
-| `/usr/local/bin/mango-keys` | 监听所有 `/dev/input/event*`（每 1s 重扫热插拔），KEY_VOLUMEUP/DOWN/MUTE(115/114/113) → `mango-volume` |
+| ~~`/usr/local/bin/mango-keys`~~ | **已移除**：evdev 轮询守护会长期吃满一个核（bug.md B-042）。音量改由 dock / OSD 调节 |
 | `/usr/local/bin/mango-volume` | `up/down/mute/set N`：读当前 `BLL Digital PCM` 百分比，±5%，写入全部 8 个 `*Digital PCM`；mute 因为没有 switch，实现为"记下当前值→设 0%"，再按一次恢复 |
 | `mango-shell-start` | 与 touchd/arrange/dock/watcher 一起拉起 |
 
@@ -479,7 +479,7 @@ def rt():
 顺带修了 OSD 的一个真 bug：`layer_surface has never been configured` —— 启动时因为文件 mtime 初始化触发
 `show_value()` → `draw()` 早于第一次 `configure`。现在加 `configured` 标志，未 configure 前只记录状态不绘制。
 
-验证：重启 shell 后 `mango-touchd / mango-dock / mango-osd / mango-arrange / mango-keys / mango-shell-watch /
+验证：重启 shell 后 `mango-touchd / mango-dock / mango-osd / mango-arrange / mango-shell-watch /
 mangobar` 七个组件全部在，`mmsg get all-layers` 有 mangobar + mango-dock，改音量 OSD 正常弹出并在 1.5s 后消失。
 
 ### 7.17 会话入口切到 fish、去掉 waybar、删除 mango-startup.sh（2026-10-25）
@@ -500,7 +500,7 @@ mangobar` 七个组件全部在，`mmsg get all-layers` 有 mangobar + mango-doc
 重启 `getty@tty1` 后的实测进程表：
 
 ```
-mango-touchd / mango-dock / mango-osd / mango-arrange / mango-keys / mango-shell-watch / mangobar / swaybg
+mango-touchd / mango-dock / mango-osd / mango-arrange / mango-shell-watch / mangobar / swaybg
 （无 waybar）
 ```
 
