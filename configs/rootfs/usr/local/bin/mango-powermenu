@@ -10,6 +10,7 @@ import subprocess
 import sys
 
 import shutil
+import time
 
 import gi
 
@@ -198,13 +199,25 @@ class PowerMenu(Gtk.Window):
         self.show_menu()
 
     # -- actions ----------------------------------------------------------
+    def log(self, line):
+        """Keep a trace: a menu that closes without doing anything must be debuggable."""
+        path = os.path.join(os.path.expanduser("~/.cache"), "mango-powermenu.log")
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "a") as fh:
+                fh.write("%s %s\n" % (time.strftime("%F %T"), line))
+        except OSError:
+            pass
+
     def run(self, cmd):
         """Run it and surface any failure - a silent close looks like "no reaction"."""
+        self.log("run: %s" % cmd)
         try:
             res = subprocess.run(["/bin/sh", "-c", cmd], capture_output=True, text=True, timeout=15)
         except Exception as exc:  # pragma: no cover - defensive
             self.show_error(str(exc))
             return
+        self.log("rc=%d stderr=%r" % (res.returncode, (res.stderr or "").strip()[:200]))
         if res.returncode != 0:
             msg = (res.stderr or res.stdout or "退出码 %d" % res.returncode).strip()
             self.show_error(msg[:300])
