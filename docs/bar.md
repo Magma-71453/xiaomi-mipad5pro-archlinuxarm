@@ -41,11 +41,22 @@ busctl --user get-property org.kde.StatusNotifierWatcher /StatusNotifierWatcher 
         org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems     # -> as N "..."
 ```
 
+### 菜单（dbusmenu 宿主）
+
+托盘项的菜单通过 **`com.canonical.dbusmenu`** 读取：
+
+1. 读 SNI 的 `Menu` 属性拿到菜单对象路径；
+2. `GetLayout(0, 1, [])` 取顶层条目（`(ia{sv}av)` 递归解析 `label` / `enabled` / `visible` / `type` / `children-display`）；
+3. 用 **rofi -dmenu** 呈现条目（`id\tlabel` 形式，选完回读 id）；
+4. 回发 `Event(id, "clicked", variant(int32 0), timestamp)` 触发应用的动作。
+
+选择 rofi 而不是自绘菜单，是为了避免再引入一个 overlay 图层表面与命中测试；rofi 本身已在本 shell 里承担启动器。
+若应用没有 `Menu` 对象（`ItemIsMenu` 型），退化为发送 `ContextMenu(0,0)` 交给应用自己处理。
+
 ### 尚未实现
 
-- **dbusmenu 渲染**：`ContextMenu` 只是通知应用「弹出你的菜单」，菜单内容需要宿主实现 `com.canonical.dbusmenu`（`GetLayout` 等）并自己画出来。
-  目前长按只会发出请求，Qt 应用的菜单不会显示；要做的话是下一块工作。
-- Legacy **XEmbed** 托盘（老式 GTK2/X11 图标）不支持。
+- **Legacy XEmbed 托盘**（老式 GTK2/X11 图标）不支持；
+- 菜单里的**二级子菜单**目前只列出一层（带 `›` 标记但不会展开）。
 
 ### 窗口「藏入托盘」的补充功能
 
