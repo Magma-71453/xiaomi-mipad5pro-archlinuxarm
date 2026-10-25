@@ -109,6 +109,14 @@ window {
 """
 
 
+def have_qbootctl():
+    """waybar is started with PATH=/usr/bin, so shutil.which alone lies here."""
+    candidates = ("/usr/local/bin/qbootctl", "/usr/bin/qbootctl", "/bin/qbootctl")
+    if any(os.access(p, os.X_OK) for p in candidates):
+        return True
+    return shutil.which("qbootctl", path="/usr/local/bin:/usr/bin:/bin") is not None
+
+
 class PowerMenu(Gtk.Window):
     def __init__(self):
         super().__init__(type=Gtk.WindowType.TOPLEVEL)
@@ -164,7 +172,7 @@ class PowerMenu(Gtk.Window):
         title = Gtk.Label(label=question)
         title.get_style_context().add_class("title")
         note = label
-        if "qbootctl" in cmd and not shutil.which("qbootctl"):
+        if "qbootctl" in cmd and not have_qbootctl():
             note = "qbootctl 未安装，无法切换"
         sub = Gtk.Label(label=note)
         sub.get_style_context().add_class("subtitle")
