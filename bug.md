@@ -469,3 +469,34 @@
   - 仓库：删除 `configs/rootfs/usr/local/bin/mango-keys`，同步 `mango-shell-start`，文档（`docs/mango.md`、`handoff-mango-shell.md`、`mango-shell-summary.md`、`README.md`）标注已移除。
 - 效果：`ps` 前几名变为 `wechat 10.8%`、`mango 7.1%`，不再有单核常驻占用。
 - 替代方案：音量用 dock / OSD 调节；若将来要恢复硬件按键，正确做法是在 `mango` 配置里绑定 keysym（不用轮询守护）。
+
+## B-043 reboot 卡住不关机 / tty 满屏内核日志（已修复）
+
+### 关机卡住的真凶：fstrim 处于 D 状态
+
+- 现象：`reboot` / `poweroff` 后系统不再响应，只能长按电源强制断电；journal 里**完全没有关机序列**（没有 `Stopping …`，`--list-boots` 显示上一次启动的结束时间就是断电瞬间）。
+- 定位：`ps -eo pid,stat,comm` 发现 **`fstrim` 处于 `D` 状态（不可中断 I/O）**：
+  ```
+  1305 Ds  87  /usr/bin/fstrim --listed-in /etc/fstab:/proc/self/mountinfo --verbose --quiet-unsupported
+  ```
+  `fstrim.timer`（Arch 默认启用，每周）在开机后立刻触发，对 **196 GB 的 f2fs 根分区**做 TRIM。
+- 为什么会导致关机卡死：D 状态的进程**连 SIGKILL 都不响应**，systemd 停止 `fstrim.service` 时只能一直等（默认 90 s 后仍无法回收），
+  随后 `systemctl reboot` 卡在 stop job 上，看起来就是“卡住不关机”。
+- 修复：
+  ```
+  systemctl disable --now fstrim.timer
+  systemctl mask fstrim.timer          # 防其它单元/依赖再次拉起
+  ```
+  并新增 `/etc/systemd/system.conf.d/10-timeout.conf`：`DefaultTimeoutStopSec=20s`（把任何 stop job 的最坏等待从 90 s 收敛到 20 s）。
+
+### tty 满屏日志
+
+- 原因：`kernel.printk = 4 4 1 7` → console loglevel 4，警告级内核消息（如 SLPI 崩溃）直接打到 tty1；再叠加 `getty --noclear` 保留开机日志。
+- 修复：
+  - `/etc/sysctl.d/99-quiet-console.conf`：`kernel.printk = 3 4 1 7`（只有 error 以上上控制台）；
+  - 会话启动脚本在 `exec mango` 前清屏：`printf '\033[H\033[2J\033[3J' > /dev/tty1`。
+
+### 备注
+
+- 本次开机 SLPI 仍崩溃 2 次（`sensor_process` 的 USER-PD DOG），属于**固件侧**问题，只影响传感器/PDM 麦克风，不影响音频播放；
+  控制台安静后不再刷屏。

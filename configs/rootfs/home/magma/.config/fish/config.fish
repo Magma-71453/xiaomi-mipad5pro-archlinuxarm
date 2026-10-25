@@ -36,6 +36,8 @@ if status is-login
                 end
                 sleep 1
             end
+            # wipe the boot log / DSP warnings so the desktop starts clean
+            printf '\033[H\033[2J\033[3J' > /dev/tty1
             set -l log $HOME/mango.log
             echo "=== mango start "(date -Is)" rt=$XDG_RUNTIME_DIR ===" > $log
             ls -ld $XDG_RUNTIME_DIR >> $log 2>&1
