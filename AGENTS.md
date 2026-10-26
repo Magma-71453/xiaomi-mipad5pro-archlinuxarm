@@ -1,6 +1,6 @@
 # AGENTS.md — 交接说明（给后续接手这个仓库的 agent）
 
-本文件是**操作手册 + 踩坑记录**。先读完再动手，能省掉大量重复试错。
+本文件面向接手仓库的 agent：讲清**约定、流程、验证手段与已知陷阱**。动手前先读完。
 
 ---
 
@@ -84,7 +84,7 @@ ssh ... 'bash -s' < run.sh
 ssh ... 'bash -s' < install.sh
 ```
 
-### ⚠️ 最容易踩的坑（踩过两次，代价很大）
+### ⚠️ 安装必须可验证
 
 **`a && b && c` 链条里任何一步失败，后面的 install 就静默不执行**，而你以为装好了。典型触发：`chmod` 对 root 拥有的文件报 `不允许的操作`。
 
@@ -95,7 +95,7 @@ ssh ... 'grep -c "关键字" /usr/local/bin/xxx'   # 事先想好期望值
 ssh ... 'ls -l /usr/local/bin/xxx'              # 看时间戳
 ```
 
-同一个坑也出现在 `/usr/local/bin/mango-shell-start` 上（设备上长期是旧版本、启动的是已归档的 mango-bar）。**改完外壳/UI 相关的东西，一定核对设备上真正在跑的文件版本。**
+这条规则对 `/usr/local/bin` 下所有脚本一律适用；改动外壳相关文件后，必须核对设备上**真正在运行**的版本。
 ---
 
 ## 6. 怎么验证（不要靠“应该可以”）
@@ -136,7 +136,7 @@ sudo python3 /home/magma/touch_inject.py drag 600 95 760 320  # 拖一段
 | 电源菜单 | `configs/rootfs/usr/local/bin/mango-powermenu` | Python3+GTK3，Material 3 卡片 4×1（睡眠/关机/重启/Android），二次确认，带执行日志与重启看门狗 |
 | 编辑模式 | `configs/mango-shell/mango-actions.c` | 全屏 overlay，选中窗口后 ✕ / ⛶ / ✋，已优化拖动性能 |
 | dock | `configs/mango-shell/mango-dock.c` | 底部图标条 + 编辑模式入口 |
-| 会话启动 | `configs/rootfs/usr/local/bin/mango-shell-start` | 由 fish 登录脚本调用；**待改成 systemd 服务**（见第 10 节） |
+| 会话启动 | `configs/rootfs/usr/local/bin/mango-shell-start` | 由登录脚本（fish）启动会话；要求开机顺序可靠时应交给 systemd system unit 管理 |
 | 归档 | `configs/mango-shell/mango-bar.c` | 自写 C 状态栏，**已废弃**（mango 不给它派发输入），保留参考 |
 | 槽位切换 | `scripts/build-qbootctl.sh` | 编译 qbootctl；`-s 0` = _a = Android，`-s 1` = _b = Linux |
 
@@ -168,7 +168,7 @@ sudo python3 /home/magma/touch_inject.py drag 600 95 760 320  # 拖一段
 3. **已知限制**（明确写“没做/做不到”，比让后人猜要好）。
 ---
 
-## 9. 已知坑（血泪清单，按杀伤力排序）
+## 9. 已知陷阱与设计约束（按影响面排序）
 
 ### 9.1 mango 的 IPC：**必须读回复**
 
@@ -222,7 +222,7 @@ emoji 全变方块。用已安装的 `Symbols Nerd Font` 码位（`U+F1EB` / `U+
 
 现象：设备起来了、背光亮，但 mango / waybar 都没运行（tty1 只剩一个 -fish）。
 原因：fish 启动脚本「等时钟 ≥2024（最多 20 秒）→ exec mango」存在竞态（本机没有 RTC）。
-**急救：`sudo systemctl restart getty@tty1`。**
+**急救：`sudo systemctl restart getty@tty1`。** 结构性解法是把会话交给 systemd system unit，开机顺序由 systemd 保证、失败可自动重启。
 
 ### 9.10 mango-actions 需要 libcjson，且必须拿到 socket 路径
 
@@ -233,19 +233,7 @@ emoji 全变方块。用已安装的 `Symbols Nerd Font` 码位（`U+F1EB` / `U+
 
 ---
 
-## 10. 待办（优先顺序）
-
-1. **会话启动改成 systemd 服务**（`mango-session.service`，`After=systemd-user-sessions.service`，`Restart=on-failure`），
-   根治 9.9 的开机竞态；fish 只保留交互式配置。
-2. **定位 9.5 的具体卡死单元**：下次卡住后开 `systemd.log_level=debug` 抓关机流程，或查 f2fs/UFS 的 sync 路径。
-3. **托盘长按菜单**：mango 不产生右键事件，需要在输入层做「长按 → 右键」注入（uinput），当前按用户决定**暂不做**。
-4. **窗口标题条**：现为 `group_bar_height=12` + 全透明（只做拖动热区）。要可视化标题/关闭按钮就改
-   `configs/rootfs/etc/mango/config.conf` 的 `group_bar_*`，`mango-dispatch dispatch reload_config` 立即生效。
-5. **qbootctl / mango-powermenu 进镜像**：目前是设备上手工安装，需要在 output/ 的打包流程里固定下来。
-
----
-
-## 11. 提交前自检
+## 10. 提交前自检
 
 ```sh
 git status --porcelain     # 确认没有构建目录 / 二进制 / 临时文件
