@@ -800,6 +800,7 @@ libscenefx-0.5.so libxcb.so.1 libxcb-icccm.so.4 libxcb-randr.so.0
 | f2fs 洁净态 | fsck 不动点 | [Fail] 0 行；fsck 对副本只改 4 字节（1033/1037/5129/5133） | PASS |
 | magma 口令 | $6$ SHA-512 | /etc/shadow 第二字段 100 字节，前缀 $6$；root 前缀 ! 锁定 | PASS |
 | tty1 autologin | drop-in + enable | /etc/systemd/system/getty@tty1.service.d/autologin.conf；getty@tty1.service → getty@.service | PASS |
+| serial-getty@ttyGS0 | opt-in | 默认无 getty.target.wants 链接，`elish.fixroot=1` 不再创建；需要时可 `systemctl enable --now serial-getty@ttyGS0.service` | PASS |
 | mango-session | 0755 | /usr/local/bin/mango-session（XDG_RUNTIME_DIR 0700、MOZ_ENABLE_WAYLAND、exec mango） | PASS |
 | .bash_profile | tty1 且 MANGO_RUNNING 未设 | /home/magma/.bash_profile 0644 属主 1000:1000 | PASS |
 | NetworkManager | enabled + nmcli | 链接已建；/usr/bin/nmcli 存在；无写死 WiFi 口令（模板 + 助手） | PASS |
