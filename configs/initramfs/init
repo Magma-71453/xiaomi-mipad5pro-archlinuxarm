@@ -245,11 +245,10 @@ switch_to_root() {
     # initramfs tree, so switch_root would otherwise present empty directories.
     case "$(cat /proc/cmdline 2>/dev/null)" in
         *elish.fixroot=1*)
-            mkdir -p "$NEWROOT/etc/systemd/system/sockets.target.wants" "$NEWROOT/etc/systemd/system/getty.target.wants"
+            mkdir -p "$NEWROOT/etc/systemd/system/sockets.target.wants"
             ln -sfn ../../../usr/lib/systemd/system/dbus.socket "$NEWROOT/etc/systemd/system/sockets.target.wants/dbus.socket"
-            ln -sfn ../../../usr/lib/systemd/system/serial-getty@.service "$NEWROOT/etc/systemd/system/getty.target.wants/serial-getty@ttyGS0.service"
             sync
-            log "fixroot: dbus.socket + serial-getty@ttyGS0 enabled in the rootfs"
+            log "fixroot: dbus.socket enabled in the rootfs"
             ;;
     esac
     if [ "$USBNET" = "1" ]; then setup_usb_net; fi

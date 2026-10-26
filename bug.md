@@ -250,6 +250,13 @@
 | B-026 | sload.f2fs 写坏大文件 | 已修复 | 改用 loop 挂载 + tar 解包生成镜像（scripts/make-f2fs-image-root.sh） |
 | B-027 | 自动登录不生效 | 已修复 | tar 由普通用户打包 → /etc 属主 uid 1000 → **systemd 忽略非 root 拥有的 unit/drop-in**；镜像构建时 `chown -R 0:0` 并恢复 setuid 位 |
 | B-028 | mango 退出 rc=1（Wayland socket 加不上） | 已修复 | logind 未创建 `/run/user/1000` → `XDG_RUNTIME_DIR` 指向不存在目录；改为 `$HOME/.xdg`（0700），日志落 `$HOME/mango.log` |
+| B-029 | tty1/Mango 未启动 | 已修复 | `serial-getty@ttyGS0` 持有 `/dev/console` 的 `flock`，阻塞 tty1；默认移除串口 getty 自动启用 |
+
+### B-029 tty1 被 USB 串口 getty 锁住（2026-10-26）
+
+- 根因：`getty@tty1` 的 systemd executor 阻塞在 `/dev/console` 的 `flock`；`serial-getty@ttyGS0` 持有该独占锁，导致 tty1 自动登录与 MangoWM 启动链未运行。
+- 修复：rootfs 不再启用 `serial-getty@ttyGS0`，`elish.fixroot=1` 分支也不再每次开机重建其 wants 链接；服务模板仍保留，可按需手动启用。
+- 真机验证：串口 getty 停止后 tty1 登录会话及 `/usr/bin/mango` 正常运行。当前设备的旧 initramfs 仍带 `elish.fixroot=1`，故设备端实例额外使用可逆 mask；重启用时先 `systemctl unmask serial-getty@ttyGS0.service`，再 `systemctl enable --now serial-getty@ttyGS0.service`（启用后可能再次与桌面争用 console 锁）。
 
 ### 真机运行态证据（2026-10-24 23:4x，经 USB 网络 ssh）
 - `ps -u magma`：`/usr/bin/mango` 在 tty1、`Xwayland :0 -rootless` 同时在跑；
