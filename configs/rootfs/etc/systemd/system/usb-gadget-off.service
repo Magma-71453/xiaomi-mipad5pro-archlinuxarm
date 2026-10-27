@@ -6,6 +6,8 @@ After=multi-user.target usb-net-debug.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/bin/sh -c 'echo "" > /sys/kernel/config/usb_gadget/g1/UDC 2>/dev/null || true'
+# Clear the usb0 address/route the gadget leaves behind; no-op when usb0 is absent.
+ExecStart=/usr/bin/sh -c 'test -e /sys/class/net/usb0 || exit 0; /usr/bin/ip -4 addr flush dev usb0 || true; /usr/bin/ip -6 addr flush dev usb0 || true; /usr/bin/ip -4 route flush dev usb0 || true; /usr/bin/ip -6 route flush dev usb0 || true'
 
 [Install]
 WantedBy=multi-user.target
