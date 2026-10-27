@@ -9,7 +9,7 @@
   "margin-right": 0,
   "modules-left": ["wlr/taskbar"],
   "modules-center": ["clock"],
-  "modules-right": ["tray", "pulseaudio", "network", "bluetooth", "custom/power"],
+  "modules-right": ["tray", "battery", "pulseaudio", "network", "bluetooth", "custom/power"],
 
   "wlr/taskbar": {
     "format": "{icon}",
@@ -32,6 +32,18 @@
     "icon-size": 18,
     "spacing": 10,
     "reverse-direction": true
+  },
+
+  "battery": {
+    "bat": "bq27z561-0",
+    "interval": 30,
+    "states": { "warning": 30, "critical": 15 },
+    "format": "{icon} {capacity}%",
+    "format-charging": "\uf0e7 {capacity}%",
+    "format-discharging": "{icon} {capacity}%",
+    "format-full": "\uf240 {capacity}%",
+    "format-icons": ["\uf244", "\uf243", "\uf242", "\uf241", "\uf240"],
+    "tooltip-format": "电量 {capacity}%"
   },
 
   "pulseaudio": {
