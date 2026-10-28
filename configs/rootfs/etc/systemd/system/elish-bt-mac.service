@@ -3,6 +3,10 @@ Description=Give the QCA6390 Bluetooth controller a usable BD_ADDR (it reports 0
 # see bug.md B-047
 After=bluetooth.service
 Wants=bluetooth.service
+# hci_uart probes the serdev late in boot, so a failed run must not be the last
+# word: retry with a pause instead of leaving the adapter unconfigured forever.
+StartLimitBurst=5
+StartLimitIntervalSec=600
 
 [Service]
 Type=oneshot
@@ -10,6 +14,8 @@ RemainAfterExit=yes
 # worst case: 60 s waiting for hci0 + 10 x (10 s btmgmt + 3 s back-off)
 TimeoutStartSec=240
 ExecStart=/usr/local/bin/elish-bt-mac
+Restart=on-failure
+RestartSec=10s
 
 [Install]
 WantedBy=multi-user.target
