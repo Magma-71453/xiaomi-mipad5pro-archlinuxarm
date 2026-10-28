@@ -1,0 +1,55 @@
+#!/bin/sh
+# elish-mac-address -- derive a stable, per-device, locally administered MAC.
+#
+# The QCA6390 on this tablet ships no MAC for either radio: the Bluetooth
+# controller reports 00:00:00:00:5A:AD and ath11k reports 00:00:00:00:00:00.
+# Hard-coding one address would make every flashed image share it, so derive it
+# from something the machine already has and that survives reflashing.
+#
+# Usage: elish-mac-address bt|wlan
+#   prints e.g. 02:9f:3c:11:a2:5e     (02 -> locally administered, unicast)
+#
+# See bug.md B-033 (Wi-Fi) and B-047 (Bluetooth).
+
+set -u
+PATH=/usr/bin:/usr/local/bin
+export PATH
+
+domain=${1:-}
+case "$domain" in
+	bt|wlan) ;;
+	*) echo "usage: elish-mac-address bt|wlan" >&2; exit 2 ;;
+esac
+
+# Every source below is stable across reboots and reinstalls; prefer the
+# bootloader-provided serial, fall back to SoC info, then to machine-id.
+serial=''
+if [ -r /proc/cmdline ]; then
+	serial=$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^androidboot\.serialno=//p' | head -n 1)
+fi
+[ -n "${serial}" ] || serial=$(cat /sys/devices/soc0/serial_number 2>/dev/null)
+[ -n "${serial}" ] || serial=$(cat /etc/machine-id 2>/dev/null)
+if [ -z "${serial}" ]; then
+	echo "elish-mac-address: no stable serial available" >&2
+	exit 1
+fi
+
+# Separate domain strings so the two radios never collide on one address.
+if command -v md5sum >/dev/null 2>&1; then
+	seed=$(printf 'elish-%s-%s' "$domain" "$serial")
+	hex=$(printf '%s' "$seed" | md5sum | cut -c1-10)
+else
+	echo "elish-mac-address: md5sum not found" >&2
+	exit 1
+fi
+
+# Upper case on purpose: bluez names its per-adapter state directory after the
+# address the controller reports, which is upper case. Emitting lower case would
+# create a second, orphaned directory and silently hide every pairing.
+# 10 hex digits = 5 octets; the first octet stays 02 (locally administered).
+printf '02:%s:%s:%s:%s:%s\n' \
+	"$(printf '%s' "$hex" | cut -c1-2 | tr 'a-f' 'A-F')" \
+	"$(printf '%s' "$hex" | cut -c3-4 | tr 'a-f' 'A-F')" \
+	"$(printf '%s' "$hex" | cut -c5-6 | tr 'a-f' 'A-F')" \
+	"$(printf '%s' "$hex" | cut -c7-8 | tr 'a-f' 'A-F')" \
+	"$(printf '%s' "$hex" | cut -c9-10 | tr 'a-f' 'A-F')"

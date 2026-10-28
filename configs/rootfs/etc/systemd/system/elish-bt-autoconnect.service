@@ -1,0 +1,18 @@
+[Unit]
+Description=Reconnect trusted Bluetooth peripherals after boot
+# see bug.md B-050
+After=bluetooth.service elish-bt-mac.service
+Wants=bluetooth.service
+StartLimitBurst=3
+StartLimitIntervalSec=600
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=180
+ExecStart=/usr/local/bin/elish-bt-autoconnect
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target

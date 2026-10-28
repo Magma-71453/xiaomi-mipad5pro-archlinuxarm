@@ -21,10 +21,58 @@ set -u
 PATH=/usr/bin:/usr/local/bin
 export PATH
 
-MAC=${BT_MAC:-02:00:00:12:34:57}
 WAIT=${BT_WAIT_SECONDS:-60}
 
 log() { printf 'elish-bt-mac: %s\n' "$*"; }
+
+# Per-device address: a hard-coded one would make every flashed tablet share a
+# BD_ADDR, so derive it from the machine serial instead. BT_MAC still overrides.
+MAC=${BT_MAC:-}
+if [ -z "$MAC" ]; then
+	MAC=$(/usr/local/bin/elish-mac-address bt 2>/dev/null)
+fi
+if [ -z "$MAC" ]; then
+	log "cannot derive a MAC address, giving up"
+	exit 1
+fi
+
+# bluez keeps pairings under /var/lib/bluetooth/<adapter-MAC>/<device-MAC>/.
+# When the adapter address changes (first boot of a rebuilt image, or an image
+# that used to hard-code one), the old tree is orphaned and every previously
+# paired keyboard/mouse/headset silently disappears. Carry the store over so
+# users do not have to re-pair after an upgrade.
+migrate_store() {
+	store=/var/lib/bluetooth
+	[ -d "$store" ] || return 0
+	want="$store/$MAC"
+	# bluez may already have created an (empty) directory for the new address;
+	# that must not stop the migration, only an existing device entry should
+	[ -n "$(find "$want" -mindepth 2 -maxdepth 2 -name info -print -quit 2>/dev/null)" ] && return 0
+
+	# pick the newest orphaned adapter directory that actually holds devices.
+	# Compare case-insensitively: bluez names the directory after the address the
+	# controller reports (upper case) while this script may hold another spelling
+	# of the same address -- comparing literally would treat it as a donor tree
+	# and migrate the store onto itself.
+	src=''
+	for d in "$store"/*; do
+		[ -d "$d" ] || continue
+		[ "$(basename "$d" | tr 'a-f' 'A-F')" = "$(printf '%s' "$MAC" | tr 'a-f' 'A-F')" ] && continue
+		# only adopt a directory that has at least one device entry
+		[ -n "$(find "$d" -mindepth 2 -maxdepth 2 -name info -print -quit 2>/dev/null)" ] || continue
+		if [ -z "$src" ] || [ "$d" -nt "$src" ]; then src="$d"; fi
+	done
+	[ -n "$src" ] || return 0
+
+	mkdir -p "$want"
+	# copy rather than move: if the derivation changes again the old tree stays
+	# available, and a failed copy never destroys the user's pairings
+	if cp -a "$src"/. "$want"/ 2>/dev/null; then
+		log "carried pairings over from $(basename "$src")"
+	else
+		log "WARNING: could not carry pairings over from $(basename "$src")"
+	fi
+}
 
 # btmgmt can block on a half-initialised controller, so never let it hang the unit
 configured() {
@@ -34,6 +82,18 @@ configured() {
 current_addr() {
 	timeout 10 btmgmt --index 0 info 2>/dev/null | sed -n 's/^[[:space:]]*addr //p' | head -n 1
 }
+
+# "Configured" is not enough: after an upgrade the controller may still carry an
+# address this image no longer wants (e.g. one an older release hard-coded). Treat
+# that as unconfigured so the derived address is applied and the pairing store
+# stays under a stable name.
+address_is_wanted() {
+	got=$(current_addr | tr 'a-f' 'A-F')
+	[ -n "$got" ] || return 1
+	[ "$got" = "$(printf '%s' "$MAC" | tr 'a-f' 'A-F')" ]
+}
+
+migrate_store
 
 # hci0 appears only after the UART firmware download finished (~12 s at boot)
 i=0
@@ -47,9 +107,12 @@ if [ ! -e /sys/class/bluetooth/hci0 ]; then
 	exit 1
 fi
 
-if configured; then
+if configured && address_is_wanted; then
 	log "already configured: $(current_addr)"
 	exit 0
+fi
+if configured; then
+	log "controller still carries $(current_addr), want $MAC: overriding"
 fi
 
 # The address only sticks once the firmware download finished; a request that

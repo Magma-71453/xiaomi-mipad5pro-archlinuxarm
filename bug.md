@@ -640,4 +640,88 @@
 - 与 B-047 的关系：B-047 修的是"适配器根本不出现"，本条目是**独立的第二个缺陷**；
   两者都修好后键盘才有机会连上。
 
+## B-049 蓝牙功能不完整：RFCOMM / BNEP 被内核配置关掉
+
+- 现象：适配器能出现、能扫到设备，但蓝牙耳机麦克风（HFP/HSP）、蓝牙网络共享都用不了。
+  bluetoothd 日志直接说缺协议支持：
+  ```
+  profiles/network/bnep.c:bnep_init() kernel lacks bnep-protocol support
+  src/profile.c:ext_start_servers() RFCOMM server failed for Hands-Free unit:
+      socket(STREAM, RFCOMM): Protocol not supported (93)
+  ```
+- 根因：上游 postmarketOS 的 `config-postmarketos-qcom-sm8250.aarch64` 里
+  `# CONFIG_BT_RFCOMM is not set`、`# CONFIG_BT_BNEP is not set`，
+  所以 `rfcomm.ko`/`bnep.ko` **连模块文件都不存在**，用户态无法补救，只能重编内核。
+- 修复：新增 `configs/kernel/fragments/60-bluetooth-full.config`，由 `build-kernel.sh`
+  在基准 config 之后合并：
+  ```
+  CONFIG_BT_RFCOMM=m   CONFIG_BT_RFCOMM_TTY=y
+  CONFIG_BT_BNEP=m     CONFIG_BT_BNEP_MC_FILTER=y  CONFIG_BT_BNEP_PROTO_FILTER=y
+  CONFIG_BT_HIDP=m     CONFIG_BT_MSFTEXT=y  CONFIG_BT_AOSPEXT=y  CONFIG_BT_DEBUGFS=y
+  ```
+- 验证状态：**配置已入库，尚未重编内核验证**（本机没有 kbuild 树）。
+  重编后应能 `lsmod | grep -E '^rfcomm|^bnep'` 看到模块，且 bluetoothd 不再报上述两条。
+- 影响面：这是"像其它系统一样正常"的关键一环——没有 RFCOMM，蓝牙耳机只能听不能说。
+
+## B-050 重启后蓝牙外设不自动重连
+
+- 现象：键盘配对并 `Trusted: yes` 后，重启仍停在 `Connected: no`，
+  必须手动 `bluetoothctl connect`。
+- 根因：bluez **只在设备主动寻呼、或有人调用 `Device1.Connect` 时才连接**。
+  键盘在主机重启后通常不会自己 paging 过来，于是就一直躺着。
+  （不是配对丢失：`/var/lib/bluetooth/…/info` 里 `LinkKey`、`Trusted=true` 都在。）
+- 修复：新增 `elish-bt-autoconnect.service` + `/usr/local/bin/elish-bt-autoconnect`：
+  开机后读取配对库里的 `Trusted=true` 设备，未连接的逐个 `bluetoothctl connect`，
+  最多 6 轮、每轮间隔 5 s；无设备要连时直接成功退出。
+  `After=elish-bt-mac.service bluetooth.service`，绑到 `multi-user.target`。
+- 坑（已修）：
+  1. `/var/lib/bluetooth` 是 `0700 root`，脚本以普通用户跑会**静默读不到任何设备** → 必须系统级 root 运行；
+  2. 升级后配对库可能同时存在新旧两个 adapter 目录，同一设备被列出两次 → `sort -u` 去重；
+  3. 首次 `connect` 常先 `Page Timeout`，稍后再试会成功 → 单次失败不作数，靠下一轮重试。
+- 验证：真机重启后 unit 自动执行，日志出现 `all trusted devices connected`；
+  键盘 `Connected: yes`，内核创建 `B.O.W Keyboard` / `B.O.W Mouse` 输入设备
+  （`/proc/bus/input/devices` 里 `Handlers=sysrq kbd leds event9`）。
+- 已知限制：键盘关机或在别的设备上用着时仍会连不上，这是外设行为，unit 记一条
+  `still not connected` 后正常退出，不会拖慢开机。
+
+## B-051 蓝牙/Wi-Fi 地址写死导致分发镜像所有设备撞号
+
+- 现象：B-047/B-033 最初把 BD_ADDR 写死成 `02:00:00:12:34:57`、Wi-Fi 写死成
+  `02:00:00:12:34:56`。自己一台机器没问题，但**同一个镜像刷到第二台平板就撞号**。
+- 修复：新增 `/usr/local/bin/elish-mac-address`，从设备唯一序列号派生本地管理地址：
+  ```sh
+  elish-mac-address bt     # -> <derived-bt-mac>
+  elish-mac-address wlan   # -> <derived-wlan-mac>
+  ```
+  派生源优先 `androidboot.serialno`，退到 `/sys/devices/soc0/serial_number`，再退到 `/etc/machine-id`；
+  `bt`/`wlan` 用不同域串，保证两个无线电不会撞。
+  `elish-bt-mac` 与新的 `elish-wlan-mac` 都改用它。
+- 两个必须注意的细节（都已踩过）：
+  1. **输出必须大写**。bluez 用控制器上报的地址（大写）命名
+     `/var/lib/bluetooth/<adapter>/…`，脚本给小写会生成第二个孤儿目录，配对全部"消失"。
+  2. **换地址会让配对库孤立**：配对记录绑在 adapter 地址目录下。
+     `elish-bt-mac` 因此加了 `migrate_store()`，把旧 adapter 目录里的设备记录
+     `cp -a` 到新目录（拷贝而非移动，复制失败不毁数据），并做大小写不敏感比较，
+     避免把新目录当成 donor 自己搬自己。
+     另外 `address_is_wanted()` 会检查控制器当前地址是否等于派生值——
+     **"已配置"不等于"配置对了"**，升级场景下旧镜像写死的地址必须被改写。
+- 验证：真机重启后 `btmgmt info` 显示 `addr <derived-bt-mac>`、
+  `/sys/class/net/wlp1s0/address` 为 `<derived-wlan-mac>`，两者都等于派生气结果；
+  日志出现 `carried pairings over from 02:00:00:12:34:57`，迁移后键盘仍 `Paired: yes`。
+
+## B-052 开机即用：新设备首次配对的最小前置条件
+
+- 汇总一条给"刷完镜像就能用"的清单（都不是用户该手动做的事）：
+  ```sh
+  systemctl is-enabled bluetooth.service elish-bt-mac.service elish-bt-autoconnect.service wlp-mac.service
+  lsmod | grep -E '^hidp'        # 键盘/鼠标必需
+  bluetoothctl list              # 必须有 Controller
+  ```
+- 未完成（诚实记录）：
+  - **RFCOMM/BNEP 需重编内核**（B-049），当前镜像仍缺；
+  - 键盘最终连通性依赖外设本身处于可连接状态；本次最后一轮验证时键盘
+    `btmgmt find -b` 扫不到、`connect` 报 `Page Timeout`，属外设未响应，
+    与系统侧无关（此前同一键盘已完整跑通配对 + HID 输入设备创建）。
+
+
 

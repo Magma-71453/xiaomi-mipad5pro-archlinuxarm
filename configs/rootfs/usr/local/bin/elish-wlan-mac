@@ -1,0 +1,35 @@
+#!/bin/sh
+# elish-wlan-mac -- give wlp1s0 a usable MAC (WCN6855 reports 00:00:00:00:00:00).
+#
+# ath11k hands up a zero MAC, and the kernel refuses to bring such an interface
+# up ("Cannot assign requested address"), which makes NetworkManager give up on
+# the supplicant. A locally administered address fixes it.
+# Derived per device (elish-mac-address wlan) so distributed images differ.
+# See bug.md B-033.
+
+set -u
+PATH=/usr/bin:/usr/local/bin
+export PATH
+
+log() { printf 'elish-wlan-mac: %s\n' "$*"; }
+
+i=0
+while [ "$i" -lt 50 ] && [ ! -e /sys/class/net/wlp1s0 ]; do
+	i=$((i + 1))
+	sleep 0.2
+done
+[ -e /sys/class/net/wlp1s0 ] || { log "wlp1s0 never appeared"; exit 1; }
+
+cur=$(cat /sys/class/net/wlp1s0/address 2>/dev/null)
+case "$cur" in
+	00:00:00:00:00:00|"")
+		MAC=$(${WLAN_MAC:-} /usr/local/bin/elish-mac-address wlan 2>/dev/null)
+		[ -n "${MAC}" ] || { log "cannot derive a MAC address"; exit 1; }
+		ip link set dev wlp1s0 address "$MAC" || exit 1
+		ip link set dev wlp1s0 up
+		log "set $MAC"
+		;;
+	*)
+		log "already has $cur"
+		;;
+esac

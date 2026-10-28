@@ -1,0 +1,98 @@
+#!/bin/sh
+# elish-bt-autoconnect -- reconnect trusted Bluetooth peripherals after boot.
+#
+# bluez only connects when the *device* pages us, or when something calls
+# Device1.Connect. Keyboards and mice usually do not page on their own after the
+# host rebooted, so a paired+trusted keyboard sits at "Connected: no" until the
+# user opens bluetoothctl. This unit closes that gap: for every trusted device
+# that is not connected yet, ask bluez to connect, with a bounded number of
+# rounds so a device that is switched off cannot hold up boot.
+#
+# Runs as root (the unit is a system unit): /var/lib/bluetooth is 0700 root, so
+# reading the pairing store as a normal user silently yields nothing.
+# Quiet and idempotent: nothing to do is a success.
+# See bug.md B-050.
+
+set -u
+PATH=/usr/bin:/usr/local/bin:/usr/bin
+export PATH
+
+ROUNDS=${BT_AUTOCONNECT_ROUNDS:-6}
+DELAY=${BT_AUTOCONNECT_DELAY:-5}
+
+log() { printf 'elish-bt-autoconnect: %s\n' "$*"; }
+
+# Trusted devices are the ones the user asked us to remember. Read the pairing
+# store directly: asking bluez for properties per device needs a D-Bus client,
+# while the store is plain files and this unit already runs as root.
+# The store can hold several adapter directories at once (an upgrade leaves the
+# previous one behind), so the same device may appear more than once. Report each
+# address a single time, otherwise every round issues duplicate connects.
+trusted_devices() {
+	for f in /var/lib/bluetooth/*/*/info; do
+		[ -f "$f" ] || continue
+		grep -q '^Trusted=true' "$f" 2>/dev/null || continue
+		basename "$(dirname "$f")"
+	done | sort -u
+}
+
+connected_devices() {
+	bluetoothctl devices Connected 2>/dev/null |
+		sed -n 's/^Device \([0-9A-F:]*\) .*/\1/p'
+}
+
+wait_for_adapter() {
+	i=0
+	while [ "$i" -lt 30 ]; do
+		if bluetoothctl list 2>/dev/null | grep -q '^Controller'; then
+			return 0
+		fi
+		i=$((i + 1))
+		sleep 2
+	done
+	return 1
+}
+
+wait_for_adapter || { log "no adapter after 60 s, giving up"; exit 1; }
+
+# Settle: bluez finishes profile registration a few seconds after the adapter
+# appears, and connecting before that fails with create-socket errors.
+sleep "${BT_AUTOCONNECT_SETTLE:-5}"
+
+if [ -z "$(trusted_devices)" ]; then
+	log "no trusted devices, nothing to do"
+	exit 0
+fi
+
+round=0
+while [ "$round" -lt "$ROUNDS" ]; do
+	round=$((round + 1))
+	connected=$(connected_devices)
+	pending=''
+	for dev in $(trusted_devices); do
+		printf '%s\n' "$connected" | grep -qi "^$dev$" || pending="$pending $dev"
+	done
+	[ -n "$pending" ] || { log "all trusted devices connected"; exit 0; }
+	log "round $round: trying$pending"
+	for dev in $pending; do
+		# A BR/EDR page can time out on the first attempt while the peripheral is
+		# still waking up; a second, later attempt often succeeds, so never treat
+		# one failed connect as final -- the next round retries anyway.
+		timeout 20 bluetoothctl --timeout 15 connect "$dev" >/dev/null 2>&1 || true
+	done
+	# Give the link a moment to settle before deciding it is "not connected": a
+	# keyboard that accepted the page can still drop the link itself (for example
+	# when it is switching channels), and immediately re-paging it makes that worse.
+	sleep "$DELAY"
+done
+
+connected=$(connected_devices)
+still=''
+for dev in $(trusted_devices); do
+	printf '%s\n' "$connected" | grep -qi "^$dev$" || still="$still $dev"
+done
+if [ -n "$still" ]; then
+	log "still not connected:$still (device may be off or out of range)"
+	exit 0
+fi
+log "all trusted devices connected"
