@@ -602,3 +602,42 @@
 - 已知限制：MAC 固定为本地管理地址 `02:00:00:12:34:57`（与 Wi-Fi 的 B-033 同一风格），
   不是厂商写死的真实地址；真正持久化需要往 `bluetooth_a`/`persist` 分区写 NV，本次**没有**动这些分区。
 
+## B-048 蓝牙键盘连不上（br-connection-create-socket / Page Timeout）
+
+- 现象：`bluetoothctl connect <keyboard-bd-addr>`（B.O.W 键盘）失败，报
+  `org.bluez.Error.Failed br-connection-create-socket`。
+- 根因（确凿）：`CONFIG_BT_HIDP=m`，而 **`hidp` 模块从未被加载**，也没有任何东西触发它。
+  bluez 连接 HID 设备时要先建 L2CAP **HIDP** socket，模块不存在 → 在发出任何 HCI 流量之前就失败。
+  ```sh
+  lsmod | grep hidp      # 修复前：空
+  ```
+- 修复（已验证）：
+  ```sh
+  echo hidp | sudo tee /etc/modules-load.d/elish-bluetooth-hid.conf
+  sudo modprobe hidp
+  sudo systemctl restart systemd-modules-load.service
+  lsmod | grep hidp      # -> hidp 36864 0
+  ```
+  配置已入库：`configs/rootfs/etc/modules-load.d/elish-bluetooth-hid.conf`。
+  修复后报错从 `br-connection-create-socket` 变为 HCI 层的
+  `Connect Complete` / `Status: Page Timeout (0x04)`——**说明本地链路已打通，只剩对端应答**。
+- 验证到哪一步（如实记录）：
+  - ✅ `hidp` 加载、开机持久、`systemd-modules-load.service` active；
+  - ✅ BR/EDR discovery 正常：键盘进入配对模式后能被扫到
+    （`hci0 dev_found: <keyboard-bd-addr> type BR/EDR rssi -72`），btmon 里也有
+    `BR/EDR Address: <keyboard-bd-addr>` 与 SDP 查到的 `HIDP (0x0011)`；
+  - ❌ **配对/连接未完成**：键盘只在配对模式窗口内偶发可见（连扫 3 次仅 1 次出现），
+    窗口外 `bluetoothctl info` 直接报 `not available`——bluez 未持久记录该设备，
+    `pair`/`connect` 无从发起。
+- 排查命令（下次接着查用）：
+  ```sh
+  lsmod | grep hidp                                  # 必须先有 hidp
+  sudo btmgmt --index 0 find -b                      # 纯 BR/EDR 扫描；LE 用 find -l
+  sudo btmon -w /tmp/x.mon & btmon -r /tmp/x.mon     # 看 HCI: Create Connection / Connect Complete / Page Timeout
+  ```
+- 已知限制 / 待办：QCA6390 的 BR/EDR **可用性已确认**（能发现、能 SDP），
+  但"配对成功并当键盘用"尚未跑通，需在键盘配对窗口内一次完成 `pair` + `trust` + `connect`。
+- 与 B-047 的关系：B-047 修的是"适配器根本不出现"，本条目是**独立的第二个缺陷**；
+  两者都修好后键盘才有机会连上。
+
+

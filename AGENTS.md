@@ -253,6 +253,37 @@ MAC 只存在控制器里，`hci_uart` 每次 probe（含每次开机）都会�
 排查用：`btmgmt info`（看 Index list 有没有条目）、`btmon`（看是否 Unconfigured）、
 `sudo journalctl -u bluetooth -b`。
 
+### 9.12 蓝牙键盘/鼠标连不上：先查 `hidp`
+
+HID 类外设（键盘、鼠标）走 L2CAP **HIDP**。内核里 `CONFIG_BT_HIDP=m`，而且**没有任何东西会自动加载它**，
+所以即使适配器一切正常，`bluetoothctl connect` 也会立刻失败：
+
+```
+Failed to connect: org.bluez.Error.Failed br-connection-create-socket
+```
+
+这条错误是**本地 socket 建不起来**，和射频、配对都无关——别被它带偏去查 signal 或 inquiry。
+
+```sh
+lsmod | grep hidp                          # 空就是没加载
+sudo modprobe hidp
+lsmod | grep hidp                          # hidp 36864 0
+```
+
+已固化为 `/etc/modules-load.d/elish-bluetooth-hid.conf`（仓库：
+`configs/rootfs/etc/modules-load.d/`），开机由 `systemd-modules-load.service` 加载。
+
+加载后可借助下面几条把问题分层定位：
+
+| 报错/现象 | 含义 |
+|---|---|
+| `br-connection-create-socket` | 缺 `hidp`，本地就没建 socket |
+| HCI `Connect Complete` + `Page Timeout (0x04)` | 本地链路通了，**对端没应答**（多半不在配对模式） |
+| `bluetoothctl info` 报 `not available` | bluez 没缓存这台设备，先扫描或重新进配对模式 |
+| `btmgmt find -b` 一直 0 条 | 用错通道或附近确实没有经典蓝牙设备（LE 用 `find -l`） |
+
+> 键盘/鼠标的超时窗口很短：**长按配对键后立刻扫、立刻 pair**，隔一分钟就扫不到了。
+
 ---
 
 ## 10. 提交前自检
