@@ -569,6 +569,8 @@
   已固化为 `elish-bt-mac.service` + `/usr/local/bin/elish-bt-mac`
   （`configs/rootfs/etc/systemd/system/`、`configs/rootfs/usr/local/bin/`）：
   `After=bluetooth.service`，等 `hci0` 出现后最多试 10 次，幂等（已配置则直接退出）。
+  `Restart=on-failure`（10 s 退避，`StartLimitBurst=5`/600 s）：开机时 `hci_uart`
+  的 probe 较晚，unit 抢跑失败后必须能自愈，而不是等下一次重启。
 - 注意：MAC 是**易失**的。控制器 power off/on 后保留，但 `hci_uart` 重新 probe
   （unbind/bind、重新加载模块、每次开机）就会丢，所以必须每次开机跑一次。
 - 验证（真机，先复现再修复）：
@@ -585,6 +587,16 @@
   bluetoothctl --timeout 10 scan on   # -> 扫到十几个设备（BR/EDR + LE 都有）
   ```
   幂等：第二次 `systemctl restart` 打印 `already configured: 02:00:00:12:34:57 ...` 后退出 0。
+
+  **开机自动化验证（真重启，boot_id `86403e62` → `52b3f24e`）**：\
+  `journalctl -b -u elish-bt-mac` 显示 unit 在 monotonic **15.45 s 由 systemd 自动拉起**
+  （不是手动），15.50 s 第一次 `public-addr` 即成功，结果 `Result=success`、
+  `ExecMainStatus=0`；随后 `btmgmt info` 为 `Index list with 1 item`、
+  `bluetoothctl show` 为 `Powered: yes`，`systemctl --failed` 为空，
+  6 s 扫描收到 49 个设备广播。
+
+  > 注意：restart/start 手动验证**不能**替代开机验证。unit 与 `hci_uart` 的 probe 在开机时是竞态的，
+  > 只有在真机上重启一次（比对 `boot_id`）才算验证过开机路径。
 - 回退：`sudo systemctl disable --now elish-bt-mac`，删除
   `/usr/local/bin/elish-bt-mac` 与 `/etc/systemd/system/elish-bt-mac.service`，再 `systemctl daemon-reload`。
 - 已知限制：MAC 固定为本地管理地址 `02:00:00:12:34:57`（与 Wi-Fi 的 B-033 同一风格），
