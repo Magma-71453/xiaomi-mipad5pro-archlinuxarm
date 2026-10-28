@@ -253,36 +253,57 @@ MAC 只存在控制器里，`hci_uart` 每次 probe（含每次开机）都会�
 排查用：`btmgmt info`（看 Index list 有没有条目）、`btmon`（看是否 Unconfigured）、
 `sudo journalctl -u bluetooth -b`。
 
-### 9.12 蓝牙键盘/鼠标连不上：先查 `hidp`
+### 9.12 蓝牙键盘/鼠标连不上：分三层查，别信错误文本
 
-HID 类外设（键盘、鼠标）走 L2CAP **HIDP**。内核里 `CONFIG_BT_HIDP=m`，而且**没有任何东西会自动加载它**，
-所以即使适配器一切正常，`bluetoothctl connect` 也会立刻失败：
+HID 外设（键盘/鼠标）涉及三层：**hidp 模块** → **L2CAP 建链** → **HIDP 控制通道**。
+`connect` 失败的报错**经常指错层**，按下面的顺序查最省时间。
 
-```
-Failed to connect: org.bluez.Error.Failed br-connection-create-socket
-```
-
-这条错误是**本地 socket 建不起来**，和射频、配对都无关——别被它带偏去查 signal 或 inquiry。
+**第 0 层：`hidp` 是否加载**
 
 ```sh
-lsmod | grep hidp                          # 空就是没加载
-sudo modprobe hidp
-lsmod | grep hidp                          # hidp 36864 0
+lsmod | grep hidp        # 空 = 没加载；CONFIG_BT_HIDP=m 且没人拉它
 ```
 
-已固化为 `/etc/modules-load.d/elish-bluetooth-hid.conf`（仓库：
-`configs/rootfs/etc/modules-load.d/`），开机由 `systemd-modules-load.service` 加载。
+已固化为 `/etc/modules-load.d/elish-bluetooth-hid.conf`（仓库
+`configs/rootfs/etc/modules-load.d/`），由 `systemd-modules-load.service` 开机加载。
 
-加载后可借助下面几条把问题分层定位：
+**第 1 层：看 bluez 自己的日志，而不是 bluetoothctl 的报错**
 
-| 报错/现象 | 含义 |
+```sh
+sudo journalctl -b -u bluetooth -o cat | grep 'profiles/input'
+```
+
+| bluez 日志 | 含义 | 该查什么 |
+|---|---|---|
+| `Host is down (112)` | L2CAP 建链失败 = 对端不响应 page | **外设**，不是本机 |
+| 没有 `profiles/input` 行 | 根本没走到 HID profile | `hidp` / 配对状态 |
+
+**第 2 层：HCI 看射频是否真发了**
+
+```sh
+sudo btmon -w /tmp/x.mon & bluetoothctl --timeout 20 connect <MAC>; btmon -r /tmp/x.mon
+```
+
+| HCI 现象 | 结论 |
 |---|---|
-| `br-connection-create-socket` | 缺 `hidp`，本地就没建 socket |
-| HCI `Connect Complete` + `Page Timeout (0x04)` | 本地链路通了，**对端没应答**（多半不在配对模式） |
-| `bluetoothctl info` 报 `not available` | bluez 没缓存这台设备，先扫描或重新进配对模式 |
-| `btmgmt find -b` 一直 0 条 | 用错通道或附近确实没有经典蓝牙设备（LE 用 `find -l`） |
+| `Create Connection` → `Page Timeout (0x04)` | 射频发了，外设没回（休眠/在别的主机上） |
+| `Connect Complete / Success` 后马上断 | 外设自己挂断（切主机/电量低） |
+| 完全没有 `Create Connection` | 本地问题，回第 0 层 |
 
-> 键盘/鼠标的超时窗口很短：**长按配对键后立刻扫、立刻 pair**，隔一分钟就扫不到了。
+> ⚠️ `br-connection-create-socket` **不能**直接当成"缺 hidp"。实测在 `hidp` 已加载、
+> `/proc/net/protocols` 里有 HIDP 行、并且此前成功建过输入设备的情况下，它照样出现，
+> 此时 bluez 日志是 `Host is down (112)`。bluez 只是复用同一个字符串常量。
+>
+> ⚠️ `socket(AF_BLUETOOTH, SOCK_SEQPACKET, 6)` 恒返回 `ENOTSUP(94)` 是**正常的**
+> （内核 HIDP 只支持 `SOCK_RAW`），不是故障。
+
+**外设行为（这台 B.O.W 键盘实测）**
+
+- 配对窗口期广播 `Limited Discoverable Mode`：**可发现但不可连接**；
+- 离开窗口后扫描 5 次全部 0 命中 = 休眠；
+- 同一时刻只能连一个主机，被别的电脑占着时不响应本机。
+
+> 所以"扫不到"和"连不上"常常是外设状态，不是系统坏了。**按键唤醒再试**是第一步。
 
 ---
 

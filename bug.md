@@ -723,5 +723,41 @@
     `btmgmt find -b` 扫不到、`connect` 报 `Page Timeout`，属外设未响应，
     与系统侧无关（此前同一键盘已完整跑通配对 + HID 输入设备创建）。
 
+## B-053 `br-connection-create-socket` 是误导性错误：真因是 L2CAP 建链失败
+
+- 现象：`bluetoothctl connect` 报 `org.bluez.Error.Failed br-connection-create-socket`，
+  极易被理解为"本地建不了 HIDP socket"。**这个理解是错的**，我在排查中就被它带偏过两轮。
+- 真因（bluez 自己的日志才说得清）：
+  ```
+  profiles/input/device.c:control_connect_cb() connect to <keyboard-bd-addr>: Host is down (112)
+  ```
+  `EHOSTDOWN` = **L2CAP 建链失败**，即 `HCI Create Connection` 得到了
+  `Connect Complete / Status: Page Timeout (0x04)`。socket 错误文本只是 bluez 复用了
+  同一个字符串常量，并不是 socket 层出错。
+- 反证（证明 HIDP 栈本身完全正常）：
+  ```sh
+  grep HIDP /proc/net/protocols        # -> HIDP 行存在，协议已注册
+  lsmod | grep hidp                    # -> hidp 已加载
+  # 而且真机确实成功过一次：内核直接建出了输入设备
+  #   input: B.O.W Keyboard as .../input/input10
+  #   hid-generic 0005:04E8:7021.0005: input,hidraw4: BLUETOOTH HID v0.01 Keyboard [B.O.W]
+  ```
+  `SOCK_SEQPACKET` + proto 6 恒返回 `ENOTSUP(94)` 是**预期行为**（内核 HIDP 只支持
+  `SOCK_RAW`），与连接失败无关。
+- 判定树（下次别再走弯路）：
+  | 观察 | 结论 |
+  |---|---|
+  | bluez 日志 `Host is down (112)` | 对端不响应 page，**查外设**，别查 HIDP |
+  | HCI `Page Timeout (0x04)` | 同上：射频发了，外设没回 |
+  | HCI `Connect Complete / Success` 后立刻断开 | 外设自己挂断（切换主机/电量） |
+  | `SOCK_SEQPACKET` ENOTSUP | 正常，不是故障 |
+- 外设侧的真实状态（这台 B.O.W 键盘）：
+  - 在配对窗口时广播 `Limited Discoverable Mode`，**可发现但不可连接**；
+  - 离开窗口后扫描 5 次全部 0 命中，即休眠；
+  - 同一时刻只能连一个主机，被别的电脑占用时不响应本机 page。
+- 处置：本机侧无需再改。用户按一下键盘唤醒即可连上；`elish-bt-autoconnect`
+  会在开机后尽力重连，连不上只记一条 `still not connected`，不影响开机。
+
+
 
 

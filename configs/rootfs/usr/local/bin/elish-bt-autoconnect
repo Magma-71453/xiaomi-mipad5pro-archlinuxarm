@@ -17,6 +17,12 @@ set -u
 PATH=/usr/bin:/usr/local/bin:/usr/bin
 export PATH
 
+# A peripheral that is merely asleep answers neither discovery nor paging, and a
+# keyboard sitting in "Limited Discoverable Mode" (its pairing window) is
+# discoverable but NOT connectable: paging it times out until the user presses a
+# key to bring it back to the host. So a failed round set is expected and must
+# never be treated as an error -- this unit only improves the odds right after
+# boot, it cannot wake hardware.
 ROUNDS=${BT_AUTOCONNECT_ROUNDS:-6}
 DELAY=${BT_AUTOCONNECT_DELAY:-5}
 
