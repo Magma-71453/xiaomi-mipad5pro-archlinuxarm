@@ -26,6 +26,7 @@ amplifiers, bq2597x charge-pump fast charging and an x86 layer via FEX-Emu.
 | 触摸 | ✅ | `novatek,NVT-ts-spi`（音量改由 dock / OSD 调节；原 evdev 音量守护已因 CPU 占用移除） |
 | 桌面 | ✅ | MangoWM + 自制外壳（mangobar / dock / OSD / 手势 / 屏幕键盘），见 `docs/mango.md` |
 | Wi-Fi | ✅ | ath11k WCN6855；含「MAC 全 0 导致接口起不来」的修复（`wlp-mac.service`） |
+| 蓝牙 | ✅ | QCA6390（`hci_uart`）；含「BD_ADDR 全 0 导致适配器不出现」的修复（`elish-bt-mac.service`） |
 | 网络 | ✅ | NetworkManager + 公共 DNS 兜底 + `timesyncd`（代理客户端按需自行配置，仓库不含任何订阅/节点信息） |
 | 音频 | ✅ 立体声 | 8× CS35L41 走 TDM；内核补丁让每颗功放选对 ASP RX 声道（0=左，2=右） |
 | 音量 | ✅ | UCM 固定数字 913/913、模拟 20/20、`PCM Source=DSP`；软件音量 100% 不失真 |

@@ -546,3 +546,47 @@
   3. `draw()` 只把**选区矩形（含旧位置）+ 按钮条**标脏，而不是整屏。
 - 构建注意：`mango-actions` 需要 `libcjson`（`pkg-config --libs libcjson`）；
   `build-dock.sh` 只构建 dock，actions 需单独 `cc`。
+## B-047 蓝牙没有适配器（bluetoothctl list 为空 / No default controller available）
+
+- 现象：`bluetoothctl list`、`btmgmt info` 都返回空；`systemctl status bluetooth` 正常、
+  `rfkill list` 显示 `hci0` 未阻塞、`/sys/class/bluetooth/hci0` 也存在——
+  **内核有 hci0，但用户态拿不到适配器**。waybar 的蓝牙图标因此一直不正常。
+- 根因链（全部有现场证据）：
+  1. QCA6390 固件下载成功，但控制器上报的 BD_ADDR 是 `00:00:00:00:5A:AD`（`HCIGETDEVINFO` 读出），
+     接近全 0。内核据此置 `HCI_QUIRK_INVALID_BDADDR`。
+  2. 于是 `mgmt` 层**不发布 index**：`btmon` 只看到
+     `= New Index: 00:00:00:00:00:00` → `MGMT Event: Unconfigured Index Removed` → `= Delete Index:`，
+     `READ_INDEX_LIST` 恒为 `0 items`，bluetoothd 报 `No default controller available`。
+  3. `hci0` 的 sysfs 里 `address`/`name`/`type`/`features` 属性全部缺失，印证设备从未真正 open 成功。
+  4. 附带后果：控制器在 unconfigured 状态下反复 reprobe（某次启动 10 次 `QCA setup on UART is completed`、
+     6 次 `QCA memdump Done`，伴随 `preshutdown_cmd failed (-110)`），白耗电。
+- 修复（已验证）：写一个本地管理 MAC，内核随即 open 并发布 index。
+  ```sh
+  sudo btmgmt --index 0 public-addr 02:00:00:12:34:57
+  # -> hci0 Set Public Address complete
+  # -> btmon: New Index 02:00:00:12:34:57 / Index Info / Open Index
+  ```
+  已固化为 `elish-bt-mac.service` + `/usr/local/bin/elish-bt-mac`
+  （`configs/rootfs/etc/systemd/system/`、`configs/rootfs/usr/local/bin/`）：
+  `After=bluetooth.service`，等 `hci0` 出现后最多试 10 次，幂等（已配置则直接退出）。
+- 注意：MAC 是**易失**的。控制器 power off/on 后保留，但 `hci_uart` 重新 probe
+  （unbind/bind、重新加载模块、每次开机）就会丢，所以必须每次开机跑一次。
+- 验证（真机，先复现再修复）：
+  ```sh
+  # 复现：unbind/bind 重置 BD_ADDR
+  echo serial0-0 | sudo tee /sys/bus/serial/drivers/hci_uart_qca/unbind
+  sleep 3; echo serial0-0 | sudo tee /sys/bus/serial/drivers/hci_uart_qca/bind
+  btmgmt info            # -> Index list with 0 items
+  # 修复
+  sudo systemctl start elish-bt-mac.service
+  btmgmt info            # -> Index list with 1 item, addr 02:00:00:12:34:57
+  bluetoothctl list      # -> Controller 02:00:00:12:34:57 elish [default]
+  bluetoothctl show      # -> Powered: yes
+  bluetoothctl --timeout 10 scan on   # -> 扫到十几个设备（BR/EDR + LE 都有）
+  ```
+  幂等：第二次 `systemctl restart` 打印 `already configured: 02:00:00:12:34:57 ...` 后退出 0。
+- 回退：`sudo systemctl disable --now elish-bt-mac`，删除
+  `/usr/local/bin/elish-bt-mac` 与 `/etc/systemd/system/elish-bt-mac.service`，再 `systemctl daemon-reload`。
+- 已知限制：MAC 固定为本地管理地址 `02:00:00:12:34:57`（与 Wi-Fi 的 B-033 同一风格），
+  不是厂商写死的真实地址；真正持久化需要往 `bluetooth_a`/`persist` 分区写 NV，本次**没有**动这些分区。
+

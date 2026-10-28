@@ -1,0 +1,13 @@
+[Unit]
+Description=Give the QCA6390 Bluetooth controller a usable BD_ADDR (it reports 00:00:00:00:00:00)
+# see bug.md B-047
+After=bluetooth.service
+Wants=bluetooth.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/elish-bt-mac
+
+[Install]
+WantedBy=multi-user.target

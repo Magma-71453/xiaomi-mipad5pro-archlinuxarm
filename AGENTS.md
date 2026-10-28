@@ -231,6 +231,28 @@ emoji 全变方块。用已安装的 `Symbols Nerd Font` 码位（`U+F1EB` / `U+
   → **所有操作失效但界面照常**。现已加 `glob("$XDG_RUNTIME_DIR/mango-*.sock")` 兜底 + `flock` 单实例锁
   （两个全屏 overlay 会互抢触摸）。
 
+### 9.11 蓝牙适配器不出现（BD_ADDR 全 0）
+
+`bluetoothctl list` 空、`bluetoothctl show` 报 `No default controller available`，
+但 `rfkill` 没阻塞、`/sys/class/bluetooth/hci0` 也在——这不是服务或 rfkill 问题。
+
+根因：QCA6390 上报的 BD_ADDR 接近全 0，内核置 `HCI_QUIRK_INVALID_BDADDR`，
+mgmt 层于是**不发布 index**（`btmon` 里能看到 `Unconfigured Index Removed` + `Delete Index`），
+bluetoothd 自然拿不到适配器。副作用是控制器反复 reprobe、白耗电。
+
+修法：写一个本地 MAC，内核立刻 open 并发布 index。
+
+```sh
+sudo btmgmt --index 0 public-addr 02:00:00:12:34:57
+bluetoothctl list     # -> Controller 02:00:00:12:34:57 elish [default]
+```
+
+已固化为 `elish-bt-mac.service`（`configs/rootfs/etc/systemd/system/`）。**开机必跑**：
+MAC 只存在控制器里，`hci_uart` 每次 probe（含每次开机）都会重置它。
+
+排查用：`btmgmt info`（看 Index list 有没有条目）、`btmon`（看是否 Unconfigured）、
+`sudo journalctl -u bluetooth -b`。
+
 ---
 
 ## 10. 提交前自检

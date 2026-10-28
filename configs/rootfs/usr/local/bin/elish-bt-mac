@@ -1,0 +1,66 @@
+#!/bin/sh
+# elish-bt-mac -- give the QCA6390 Bluetooth controller a usable BD_ADDR.
+#
+# The ROME/QCA6390 chip boots with a wildcard address (00:00:00:00:00:00) and the
+# kernel then marks the hci device HCI_QUIRK_INVALID_BDADDR and keeps it
+# "unconfigured": no mgmt index is published, so bluetoothd and bluetoothctl
+# report "No default controller available" even though hci0 exists in sysfs.
+# Writing a public address through mgmt makes the kernel open the index and
+# bluetoothd picks the adapter up on its own (INDEX_ADDED).
+#
+# The address is volatile: it survives controller power on/off but is lost when
+# hci_uart re-probes the serdev, so this has to run once per boot.
+# Idempotent: a no-op when the controller is already configured.
+# See bug.md B-047.
+
+set -u
+PATH=/usr/bin:/usr/local/bin
+export PATH
+
+MAC=${BT_MAC:-02:00:00:12:34:57}
+WAIT=${BT_WAIT_SECONDS:-60}
+
+log() { printf 'elish-bt-mac: %s\n' "$*"; }
+
+configured() {
+	btmgmt info 2>/dev/null | grep -q 'Index list with 1 item'
+}
+
+# hci0 appears only after the UART firmware download finished (~12 s at boot)
+i=0
+while [ "$i" -lt "$WAIT" ]; do
+	[ -e /sys/class/bluetooth/hci0 ] && break
+	i=$((i + 1))
+	sleep 1
+done
+if [ ! -e /sys/class/bluetooth/hci0 ]; then
+	log "no hci0 after ${WAIT}s, giving up"
+	exit 1
+fi
+
+if configured; then
+	log "already configured: $(btmgmt --index 0 info 2>/dev/null | sed -n 's/^[[:space:]]*addr //p' | head -n 1)"
+	exit 0
+fi
+
+# the index exists before it can accept commands, so retry instead of failing
+# the whole unit on one early start
+i=0
+while [ "$i" -lt 10 ]; do
+	i=$((i + 1))
+	if configured; then
+		log "controller configured as $MAC"
+		exit 0
+	fi
+	out=$(btmgmt --index 0 public-addr "$MAC" 2>&1)
+	log "attempt $i: $(printf '%s' "$out" | tr -d '\r' | tail -n 1)"
+	sleep 2
+done
+
+if configured; then
+	log "controller configured as $MAC"
+	exit 0
+fi
+
+log "controller still unconfigured after 10 attempts"
+exit 1
