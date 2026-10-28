@@ -7,7 +7,8 @@ Wants=bluetooth.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-TimeoutStartSec=150
+# worst case: 60 s waiting for hci0 + 10 x (10 s btmgmt + 3 s back-off)
+TimeoutStartSec=240
 ExecStart=/usr/local/bin/elish-bt-mac
 
 [Install]

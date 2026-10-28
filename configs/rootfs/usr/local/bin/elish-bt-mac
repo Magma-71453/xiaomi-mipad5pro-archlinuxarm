@@ -69,5 +69,5 @@ while [ "$i" -lt 10 ]; do
 	sleep 3
 done
 
-log "controller still unconfigured after 10 attempts"
+log "controller still unconfigured after 10 attempts, giving up"
 exit 1
