@@ -1,15 +1,19 @@
 #!/bin/sh
 # elish-bt-mac -- give the QCA6390 Bluetooth controller a usable BD_ADDR.
 #
-# The ROME/QCA6390 chip boots with a wildcard address (00:00:00:00:00:00) and the
-# kernel then marks the hci device HCI_QUIRK_INVALID_BDADDR and keeps it
-# "unconfigured": no mgmt index is published, so bluetoothd and bluetoothctl
-# report "No default controller available" even though hci0 exists in sysfs.
-# Writing a public address through mgmt makes the kernel open the index and
-# bluetoothd picks the adapter up on its own (INDEX_ADDED).
+# The ROME/QCA6390 firmware boots with a placeholder address: the kernel reads
+# 00:00:00:00:5A:AD out of the controller (HCI_Read_BD_Addr yields zeros), so
+# hci0 gets HCI_QUIRK_INVALID_BDADDR and stays "unconfigured". The mgmt layer
+# then never publishes an index -- btmon shows "New Index 00:00:00:00:00:00"
+# followed by "Unconfigured Index Removed" and "Delete Index" -- and bluetoothd
+# reports "No default controller available" even though rfkill is unblocked and
+# /sys/class/bluetooth/hci0 exists.
 #
-# The address is volatile: it survives controller power on/off but is lost when
-# hci_uart re-probes the serdev, so this has to run once per boot.
+# Writing a public address through mgmt makes the kernel open the index, and
+# bluetoothd picks the adapter up on its own.
+#
+# The address is volatile: it survives controller power on/off but is lost
+# whenever hci_uart re-probes the serdev, so this has to run once per boot.
 # Idempotent: a no-op when the controller is already configured.
 # See bug.md B-047.
 
@@ -22,8 +26,13 @@ WAIT=${BT_WAIT_SECONDS:-60}
 
 log() { printf 'elish-bt-mac: %s\n' "$*"; }
 
+# btmgmt can block on a half-initialised controller, so never let it hang the unit
 configured() {
-	btmgmt info 2>/dev/null | grep -q 'Index list with 1 item'
+	timeout 10 btmgmt info 2>/dev/null | grep -q 'Index list with 1 item'
+}
+
+current_addr() {
+	timeout 10 btmgmt --index 0 info 2>/dev/null | sed -n 's/^[[:space:]]*addr //p' | head -n 1
 }
 
 # hci0 appears only after the UART firmware download finished (~12 s at boot)
@@ -39,28 +48,26 @@ if [ ! -e /sys/class/bluetooth/hci0 ]; then
 fi
 
 if configured; then
-	log "already configured: $(btmgmt --index 0 info 2>/dev/null | sed -n 's/^[[:space:]]*addr //p' | head -n 1)"
+	log "already configured: $(current_addr)"
 	exit 0
 fi
 
-# the index exists before it can accept commands, so retry instead of failing
-# the whole unit on one early start
+# The address only sticks once the firmware download finished; a request that
+# arrives early is answered with "Set Public Address ... Rejected" (0x0b) and the
+# index stays unpublished, so retry for a while instead of failing the unit.
 i=0
 while [ "$i" -lt 10 ]; do
 	i=$((i + 1))
+	out=$(timeout 10 btmgmt --index 0 public-addr "$MAC" 2>&1)
+	# strip ANSI colour codes before logging so journalctl stays readable
+	msg=$(printf '%s' "$out" | sed -e "s/$(printf '\033')\[[0-9;]*m//g" -e 's/\r//g' | grep -v '^[[:space:]]*$' | tail -n 1)
+	log "attempt $i: $msg"
 	if configured; then
-		log "controller configured as $MAC"
+		log "controller configured as $(current_addr)"
 		exit 0
 	fi
-	out=$(btmgmt --index 0 public-addr "$MAC" 2>&1)
-	log "attempt $i: $(printf '%s' "$out" | tr -d '\r' | tail -n 1)"
-	sleep 2
+	sleep 3
 done
-
-if configured; then
-	log "controller configured as $MAC"
-	exit 0
-fi
 
 log "controller still unconfigured after 10 attempts"
 exit 1
