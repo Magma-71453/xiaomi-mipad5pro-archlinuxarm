@@ -107,24 +107,44 @@ ssh ... 'ls -l /usr/local/bin/xxx'              # 看时间戳
 | 看窗口几何 | `mango-dispatch get all-clients`（含 x/y/width/height/is_focused/tags） |
 | 看图层 | `mango-dispatch get all-layers` |
 | 看日志 | `journalctl -b -1 --no-pager -o short-monotonic \| tail -30` |
-| **模拟触摸**（唯一的自动化输入手段） | `/home/magma/touch_inject.py`（uinput 虚拟触摸屏，需 root） |
+| **模拟触摸**（唯一的自动化输入手段） | `sudo python3 /home/magma/touch_inject.py tap <X> <Y>`（uinput 虚拟触摸屏，需 root） |
 
-### 触摸注入的坐标映射（关键）
+### 触摸注入 touch_inject.py（关键）
 
-面板物理 1600×2560、旋转 90°、scale 2，虚拟设备坐标要**反变换**：
+真值源 `configs/rootfs/home/magma/touch_inject.py` → 设备 `/home/magma/touch_inject.py`，纯 Python3 标准库。
+每次运行 = 建一个 uinput 虚拟触摸屏 → 注入一个手势 → 销毁；`/dev/input` 不留节点。
+建好后先等 0.8 s 让 libinput 认出设备，销毁前再等 0.8 s，否则事件被丢弃。
 
-```
-逻辑坐标 (X,Y) → 设备 dx = (800 - Y) * 1279/800 , dy = X * 799/1280
-```
-
-`touch_inject.py` 已内置 `to_dev()`，直接给逻辑坐标：
+**需要 root**（`/dev/uinput` 只有 root 可写，magma 有 NOPASSWD，所以 `sudo -n` 直接用）：
 
 ```sh
-sudo python3 /home/magma/touch_inject.py tap 640 400          # 点一下
-sudo python3 /home/magma/touch_inject.py drag 600 95 760 320  # 拖一段
+sudo python3 /home/magma/touch_inject.py tap 640 300               # 单指点一下
+sudo python3 /home/magma/touch_inject.py drag 300 300 900 500      # 单指拖拽，默认 300 ms
+sudo python3 /home/magma/touch_inject.py drag 300 300 900 500 600  # 第 6 个参数 = 时长 ms
+sudo python3 /home/magma/touch_inject.py swipe 2 400 500 400 200   # 2 指同起同落，默认 400 ms
+sudo python3 /home/magma/touch_inject.py swipe 3 200 400 900 400   # 3 指横滑（切 tag）
+sudo python3 /home/magma/touch_inject.py swipe 4 400 600 400 200   # 4 指竖滑（overview）
 ```
 
+参数一律是**逻辑坐标**（1280×800）。面板物理 1600×2560、旋转 90°、scale 2，
+`EVIOCGABS` 实测设备 ABS 范围是 **MT_X 0..1599 / MT_Y 0..2559**（不是 1279/799），反变换：
+
+```
+逻辑 (X,Y) → 设备 dx = (800 - Y) * 1599 / 800 , dy = X * 2559 / 1280
+```
+
+`to_dev()` 已内置（整数除法 + 限幅）。实测精度：窗口几何 (200,120) 上点逻辑 (500,320)，
+GTK 收到的窗口内坐标是 (295.5,196.5)（期望 (300,200)）；(300,200)/(800,500)/(900,550) 三点的
+偏差完全一致，说明公式线性正确，只有 ~4.5 px 的固定窗口内偏置。
+
 > 必须设 `INPUT_PROP_DIRECT`，否则 libinput 把它当触控板而不是触摸屏。
+>
+> 已知限制：注入的事件只会进 **libinput / 合成器**。`mango-touchd` 启动时按
+> name=`NVTCapacitiveTouchScreen` 在 `/sys/class/input` 找**物理面板**节点并长期持有那个 fd，
+> 不会打开热插拔的 uinput 节点——所以"注入三指手势来验证 touchd"不成立。
+> 要验 touchd 的手势判定，得把它直接指到注入出来的节点（`mango-touchd /dev/input/eventN`，
+> 该节点是 root:root 600，需 root 运行），并把 `XDG_RUNTIME_DIR` 指到一个只含
+> `wayland-*` + 一个假 `mango-99999.sock` 的临时目录，避免真的 dispatch 到桌面。
 
 ---
 

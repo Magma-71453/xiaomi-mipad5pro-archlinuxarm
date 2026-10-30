@@ -1,0 +1,313 @@
+#!/usr/bin/env python3
+"""mango-dock-autohide -- keep the dock out of the way of fullscreen windows.
+
+Watches `mmsg watch all-clients` and asks mango-dock to hide (SIGUSR1) while
+any visible client is fullscreen or maximised, and to show again (SIGUSR2) once
+none is.  The stream drops whenever mango restarts, so the watcher reconnects on
+EOF instead of exiting.
+
+The user can take over with /usr/local/bin/mango-dock-toggle (three-finger swipe
+up).  The override lives in $XDG_RUNTIME_DIR/mango-dock-autohide.state:
+
+  auto           window detection drives the dock (nothing on disk = auto)
+  manual-hidden  the user hid the dock; window detection is ignored until the
+                 next swipe toggles it back
+  manual-shown N the user showed the dock while the window rule said N (1 =
+                 fullscreen/maximised on at that moment).  Consumed here and
+                 reset to `auto`; the rule only acts again once the window state
+                 moves away from N, otherwise showing the dock over a fullscreen
+                 window would hide it again instantly
+
+Signals are only delivered when mango-dock's own report
+($XDG_RUNTIME_DIR/mango-dock.geom, last field = hidden) disagrees with the
+wanted state, so the toggle and this daemon cannot fight each other.
+
+A dock that is restarted (crash, mango-shell-start) comes back visible without
+emitting any all-clients event, so the stream alone can never re-apply an
+override; the same goes for a state file that disagrees with the geometry.
+Both are therefore reconciled by a 1 s tick that only reads two small files and
+the process list -- the stream keeps driving window changes at once.
+"""
+import json
+import os
+import select
+import signal
+import subprocess
+import sys
+import time
+
+MMSG = "/usr/bin/mmsg"
+SIG_HIDE = signal.SIGUSR1
+SIG_SHOW = signal.SIGUSR2
+BACKOFF = 0.7               # reconnect delay when the stream or socket vanishes
+TICK = 1.0                  # housekeeping interval (dock restart / override)
+LOG_MAX = 64 * 1024         # truncate our own log past this size
+
+
+def rt_dir():
+    env = os.environ.get("XDG_RUNTIME_DIR")
+    if env and os.path.isdir(env):
+        return env
+    return "/run/user/%d" % os.getuid()
+
+
+RT = rt_dir()
+STATE = os.path.join(RT, "mango-dock-autohide.state")
+GEOM = os.path.join(RT, "mango-dock.geom")
+LOG = os.path.join(RT, "mango-dock-autohide.log")
+
+
+def log(msg):
+    try:
+        if os.path.exists(LOG) and os.path.getsize(LOG) > LOG_MAX:
+            open(LOG, "w").close()
+        with open(LOG, "a") as f:
+            f.write("%s %s\n" % (time.strftime("%H:%M:%S"), msg))
+    except OSError:
+        pass
+
+
+def read_state():
+    """(mode, window flag recorded at swipe time or None)."""
+    try:
+        with open(STATE) as f:
+            fields = f.read().split()
+    except OSError:
+        return "auto", None
+    if not fields or fields[0] not in ("auto", "manual-hidden", "manual-shown"):
+        return "auto", None
+    flag = None
+    if len(fields) > 1 and fields[1] in ("0", "1"):
+        flag = int(fields[1])
+    return fields[0], flag
+
+
+def write_state(value):
+    tmp = STATE + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            f.write(value + "\n")
+        os.replace(tmp, STATE)
+    except OSError as e:
+        log("state write failed: %s" % e)
+
+
+def geom_hidden():
+    """mango-dock's own idea of whether it is hidden, or None if unknown."""
+    try:
+        with open(GEOM) as f:
+            return int(f.read().split()[-1])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def dock_pids():
+    pids = []
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return pids
+    for e in entries:
+        if not e.isdigit():
+            continue
+        try:
+            with open("/proc/%s/cmdline" % e, "rb") as f:
+                args = f.read().split(b"\0")
+        except OSError:
+            continue
+        for a in args[:2]:
+            if os.path.basename(a.decode("utf-8", "replace")) == "mango-dock":
+                pids.append(int(e))
+                break
+    return pids
+
+
+def all_alive(pids):
+    if not pids:
+        return False
+    for pid in pids:
+        try:
+            os.kill(pid, 0)     # no signal is sent; one syscall, no file opened
+        except OSError:
+            return False
+    return True
+
+
+def apply(hidden):
+    """Drive the dock to <hidden>, but only if it is not already there."""
+    cur = geom_hidden()
+    if cur is not None and cur == (1 if hidden else 0):
+        return
+    sig = SIG_HIDE if hidden else SIG_SHOW
+    pids = dock_pids()
+    if not pids:
+        return
+    for pid in pids:
+        try:
+            os.kill(pid, sig)
+        except OSError:
+            pass
+    log("dock -> %s (was %s)" % ("hidden" if hidden else "shown", cur))
+
+
+def mango_socket():
+    sig = os.environ.get("MANGO_INSTANCE_SIGNATURE")
+    if sig and os.path.exists(sig):
+        return sig
+    try:
+        names = sorted(os.listdir(RT))
+    except OSError:
+        return None
+    for n in names:
+        if n.startswith("mango-") and n.endswith(".sock"):
+            return os.path.join(RT, n)
+    return None
+
+
+def watch(sock):
+    env = dict(os.environ)
+    env["MANGO_INSTANCE_SIGNATURE"] = sock
+    env.setdefault("XDG_RUNTIME_DIR", RT)
+    return subprocess.Popen([MMSG, "watch", "all-clients"], stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, env=env, text=True, bufsize=1)
+
+
+def snapshot(sock):
+    env = dict(os.environ)
+    env["MANGO_INSTANCE_SIGNATURE"] = sock
+    env.setdefault("XDG_RUNTIME_DIR", RT)
+    try:
+        p = subprocess.run([MMSG, "get", "all-clients"], capture_output=True,
+                           env=env, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return p.stdout.strip() or None
+
+
+def wants_hidden(line):
+    """True when any visible client is fullscreen or maximised."""
+    try:
+        clients = json.loads(line).get("clients") or []
+    except ValueError:
+        return None
+    for c in clients:
+        if c.get("is_visible") and (c.get("is_fullscreen") or c.get("is_maximized")):
+            return True
+    return False
+
+
+def decide(flag, auto_flag):
+    """Reconcile the dock with the state file.
+
+    flag is the window rule right now (True = hide) or None when the caller is
+    not re-evaluating it; auto_flag is the rule value the dock was last set to.
+    Returns the new auto_flag.  Every branch is idempotent because apply()
+    compares against mango-dock's own geometry first.
+    """
+    state, recorded = read_state()
+    if state == "manual-hidden":
+        apply(True)             # also re-asserts after a dock restart
+        return auto_flag
+    if state == "manual-shown":
+        write_state("auto")
+        apply(False)
+        log("manual-shown consumed -> auto (rule held at %s)" % recorded)
+        base = recorded if recorded is not None else auto_flag
+        if base is not None and flag is not None and flag != base:
+            apply(flag)         # the window moved on since the swipe
+            return flag
+        return base if base is not None else auto_flag
+    if flag is None:
+        return auto_flag
+    if flag != auto_flag:
+        apply(flag)
+        return flag
+    return auto_flag
+
+
+def handle(line, auto_flag):
+    """Fold one client-list line into the dock.  Returns the new auto flag."""
+    flag = wants_hidden(line)
+    if flag is None:
+        return auto_flag
+    return decide(flag, auto_flag)
+
+
+def idle(auto_flag, seen, sock):
+    """Housekeeping that no all-clients event can trigger.
+
+    A restarted dock comes back visible and the manual override has to be put
+    back on it; while an override is in force the geometry is re-checked too.
+    The cached pid is liveness-checked rather than rescanned, so an idle tick
+    costs one syscall plus two small reads instead of a /proc walk.
+    """
+    pids = seen if all_alive(seen) else dock_pids()
+    restarted = set(pids) != set(seen)
+    if restarted:
+        log("dock pids %s -> %s" % (sorted(seen), sorted(pids)))
+    state, _ = read_state()
+    if state != "auto":
+        return decide(None, auto_flag), pids
+    if restarted:
+        seed = snapshot(sock)
+        flag = wants_hidden(seed) if seed else None
+        if flag is not None:
+            apply(flag)         # a fresh dock starts visible: put the rule back
+            return flag, pids
+    return auto_flag, pids
+
+
+def main():
+    log("start pid=%d rt=%s" % (os.getpid(), RT))
+    while True:
+        sock = mango_socket()
+        if not sock:
+            time.sleep(BACKOFF)
+            continue
+        try:
+            proc = watch(sock)
+        except OSError as e:
+            log("watch spawn failed: %s" % e)
+            time.sleep(BACKOFF)
+            continue
+        log("watch connected %s" % sock)
+        auto_flag = None
+        seed = snapshot(sock)
+        if seed:
+            auto_flag = handle(seed, auto_flag)
+        seen = dock_pids()
+        fd = proc.stdout.fileno()
+        buf = b""               # bytes: a line may straddle two reads
+        try:
+            while True:
+                ready, _, _ = select.select([fd], [], [], TICK)
+                if ready:
+                    chunk = os.read(fd, 65536)
+                    if not chunk:
+                        break       # stream closed: mango went away
+                    buf += chunk
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        line = line.strip()
+                        if line:
+                            auto_flag = handle(line.decode("utf-8", "replace"),
+                                               auto_flag)
+                auto_flag, seen = idle(auto_flag, seen, sock)
+        except (OSError, ValueError) as e:
+            log("stream error: %s" % e)
+        finally:
+            try:
+                proc.kill()
+                proc.wait(timeout=2)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        log("watch ended, reconnecting")
+        time.sleep(BACKOFF)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(0)

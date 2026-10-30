@@ -758,6 +758,80 @@
 - 处置：本机侧无需再改。用户按一下键盘唤醒即可连上；`elish-bt-autoconnect`
   会在开机后尽力重连，连不上只记一条 `still not connected`，不影响开机。
 
+## B-054 dock 显隐信号只在第一次生效（unmap 后 attach buffer 被拒，dock 被杀）
 
+- 现象：`kill -USR1 mango-dock` 第一次能隐藏，`kill -USR2` 之后 dock **再也回不来**；
+  第二次起两条信号都变成"什么也没发生"，进程还活着、geom 文件里的 `hidden` 字段却照常翻转。
+- 根因：旧实现在 `signalfd` 分支里做的是**半套**状态迁移：
+  ```c
+  if (si.ssi_signo == SIGUSR1 && !hidden) {          /* 只在翻转时动作 */
+      hidden = 1;
+      wl_surface_attach(surface, NULL, 0, 0);        /* 解绑缓冲 = unmap */
+      wl_surface_commit(surface);
+  } else if (si.ssi_signo == SIGUSR2 && hidden) {
+      hidden = 0;
+      relayout();                                    /* ← 只重排，不 attach */
+  }
+  ```
+  `relayout()` 只 `set_size/set_margin` 再 commit，**没有重新 attach 缓冲**，
+  表面于是永远停在 unmapped 状态；再加上 `&& !hidden` / `&& hidden` 的守卫，
+  重复信号在状态没翻转时被直接丢弃，所以看起来"只生效第一次"。
+- 修复：
+  - 抽出幂等的 `dock_hide()` / `dock_show()`，信号处理不再有翻转守卫；
+  - `dock_hide()`：`set_exclusive_zone(0)` + `attach(NULL)` + commit（不占位、不绘制）；
+  - `dock_show()`：`set_exclusive_zone(DOCK_H + MARGIN_BOT)`（= 68 + 14 = **82**）+ 重设
+    size/margin + **空 commit**（不带 buffer）；
+  - `ls_configure` 里重建缓冲的判据加 `|| !buffer` 兜底，并在 `hidden` 为真时只 ack + 写 geom、
+    不挂缓冲。
+- **踩过的坑（必须记住）**：unmap 之后**直接** attach buffer 会被合成器按协议拒绝并杀掉 dock：
+  ```
+  zwlr_layer_surface_v1 error 2: layer_surface has never been configured
+  ```
+  正确顺序只能是：空提交换一次 configure → 在 `ls_configure` 回调里 `alloc_buffer()` + `draw()`。
+  症状是"显示一下又消失"，很容易误判成崩溃重启。
+- 验证：
+  ```sh
+  for i in 1 2 3 4; do
+    kill -USR1 $(pgrep -x mango-dock); sleep 0.4; cat /run/user/1000/mango-dock.geom   # 末字段 1
+    kill -USR2 $(pgrep -x mango-dock); sleep 0.4; cat /run/user/1000/mango-dock.geom   # 末字段 0
+  done
+  ```
+  4 轮全部生效（修复前只有第一轮）；配套自动显隐实测：全屏关闭 → 23 ms 隐藏，
+  最大化打开 → 53 ms 隐藏；手动态跨窗口事件、跨 dock 重启都保持（重启后 0.5 s 内重新施加）。
 
+## B-055 mango-touchd 把竖滑判成横滑（start 坐标锁存过早）
 
+- 现象：三指**竖**滑经常走进横向分支（切 tag），三指上滑叫不出 dock / 反应随机；
+  同一条手势重复注入，结果不稳定。
+- 根因：`ABS_MT_POSITION_X` 与 `ABS_MT_POSITION_Y` 是**两个独立事件**，一个 slot 的位置
+  要到 `SYN_REPORT` 才完整。旧代码在拿到 X 事件的当帧就锁存起点：
+  ```python
+  elif code == ABS_MT_POSITION_X:
+      st[1] = value
+      if self.start is None:
+          self.start = (value, st[2])   # ← st[2] (Y) 此刻还是 0 或上一帧的值
+  ```
+  于是起点 Y 恒为 0，`dy` 被算成"当前位置 - 0"，与真实的 `dx` 量级完全不可比；
+  某些方向组合下 `abs(dx) > abs(dy)` 成立，竖滑就被判成横滑。起点还可能被后续
+  重复的 X 事件覆盖，导致同一条手势结果抖动。
+- 修复：把几何聚合挪到**帧边界**——只有 `EV_SYN / SYN_REPORT` 才看成一次完整采样：
+  ```python
+  elif etype == EV_SYN and code == SYN_REPORT:
+      pts = self.points()
+      if pts:
+          n = len(pts); cx = sum(p[0] for p in pts)//n; cy = sum(p[1] for p in pts)//n
+          if n > self.max_fingers:        # 新手指落下 = 手势起点
+              self.max_fingers = n; self.start = (cx, cy)
+          if n == self.max_fingers:       # 手指抬起中的帧不算终点
+              self.last = (cx, cy)
+  ```
+  同时在 `BTN_TOUCH` 的按下沿重置 `start/last/max_fingers`（抬起沿才 `finish()`），
+  避免上一条手势的残留状态污染下一条。
+- 验证：
+  ```sh
+  sudo -n python3 /home/magma/touch_inject.py swipe 3 300 600 300 200   # 3 指竖滑
+  ```
+  不再走 `viewprev/viewnext_have_client`（tag 不变），而是端到端命中
+  `mango-touchd → mango-dock-toggle → mango-dock`（dock 隐藏且 state=manual-hidden）；
+  `swipe 3 200 400 900 400` 三指横滑仍切 tag；`swipe 4 400 600 400 200` 四指竖滑仍是 overview。
+  回归还确认：三指上滑**不再**触发 `toggleoverview`。

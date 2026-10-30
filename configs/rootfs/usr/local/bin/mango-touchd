@@ -2,7 +2,8 @@
 """mango-touchd — touch gestures for MangoWM.
 
   3-finger swipe left / right   previous / next tag that has clients
-  3-finger swipe up             overview toggle
+  3-finger swipe up             dock show / hide (manual, sticky)
+  4-finger swipe up / down      enter / leave overview
 
 Nothing else is bound: applications are launched only from the dock or rofi.
 """
@@ -11,11 +12,13 @@ import os
 import select
 import socket
 import struct
+import subprocess
 import sys
 
 PANEL_W, PANEL_H = 1600, 2560     # touch device native (portrait) axes
 LOG_W, LOG_H = 1280, 800          # logical output after rr:3 + scale 2
 SWIPE_MIN = 120                   # logical px
+DOCK_TOGGLE = "/usr/local/bin/mango-dock-toggle"   # desktop PATH has /usr/bin only
 EVENT = struct.Struct("llHHi")
 EV_SYN, EV_KEY, EV_ABS = 0, 1, 3
 SYN_REPORT = 0
@@ -100,11 +103,20 @@ class Touch:
             dx, dy = x1 - x0, y1 - y0
             if max(abs(dx), abs(dy)) >= SWIPE_MIN:
                 if abs(dx) > abs(dy):
-                    cmd = "viewnext_have_client" if dx < 0 else "viewprev_have_client"
-                else:
-                    cmd = "toggleoverview" if dy < 0 else None
-                if cmd:
-                    ipc(sock, "dispatch " + cmd)
+                    # horizontal swipes stay on tag switching, unchanged
+                    ipc(sock, "dispatch " + ("viewnext_have_client" if dx < 0
+                                             else "viewprev_have_client"))
+                elif self.max_fingers >= 4:
+                    # overview moved off three fingers: up enters, down leaves
+                    ipc(sock, "dispatch toggleoverview")
+                elif dy < 0:
+                    # three fingers up: flip the dock by hand (sticky)
+                    try:
+                        subprocess.Popen([DOCK_TOGGLE], stdin=subprocess.DEVNULL,
+                                         stdout=subprocess.DEVNULL,
+                                         stderr=subprocess.DEVNULL)
+                    except OSError as e:
+                        print("mango-touchd: dock toggle failed: %s" % e, flush=True)
         self.start = self.last = None
         self.max_fingers = 0
 
@@ -136,19 +148,31 @@ class Touch:
                             self.slots.pop(self.cur_slot, None)
                     elif code == ABS_MT_POSITION_X:
                         st[1] = value
-                        if self.start is None:
-                            self.start = (value, st[2])
-                        self.last = (value, st[2])
                     elif code == ABS_MT_POSITION_Y:
                         st[2] = value
-                        if self.start is None:
-                            self.start = (st[1], value)
-                        self.last = (st[1], value)
-                elif etype == EV_KEY and code == BTN_TOUCH and value == 0:
-                    self.finish(sock)
+                elif etype == EV_KEY and code == BTN_TOUCH:
+                    if value:
+                        self.start = self.last = None
+                        self.max_fingers = 0
+                    else:
+                        self.finish(sock)
                 elif etype == EV_SYN and code == SYN_REPORT:
-                    n = len(self.points())
-                    self.max_fingers = max(self.max_fingers, n)
+                    # A slot's X and Y arrive as two separate events, so only a
+                    # frame boundary carries a complete position.  Latching the
+                    # start on the X event alone read Y as 0 (or the previous
+                    # value) and skewed every direction decision.
+                    pts = self.points()
+                    if pts:
+                        n = len(pts)
+                        cx = sum(p[0] for p in pts) // n
+                        cy = sum(p[1] for p in pts) // n
+                        if n > self.max_fingers:
+                            # a new finger landed: the gesture starts here
+                            self.max_fingers = n
+                            self.start = (cx, cy)
+                        if n == self.max_fingers:
+                            # ignore the frames where fingers are already lifting
+                            self.last = (cx, cy)
 
 
 def find_device(name="NVTCapacitiveTouchScreen"):

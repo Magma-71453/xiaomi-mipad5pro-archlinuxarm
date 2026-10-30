@@ -330,6 +330,42 @@ static void relayout(void) {
 	wl_surface_commit(surface);
 }
 
+/* ----------------------------------------------------------- visibility */
+
+/*
+ * 显隐是两条自洽的状态迁移，可以重复调用（hide 后再 hide 仍是隐藏）。
+ * 旧实现只在 hidden 翻转时做半套动作：hide 用 attach(NULL) 解绑了缓冲，
+ * show 却只 relayout() 不重新 attach，于是表面一直是 unmapped ——
+ * 第二次 SIGUSR1/USR2 之后就再也看不到 dock。
+ */
+
+/* exclusive zone 只在可见时占位；改完必须 commit 才生效（两个函数下面都提交了） */
+static void dock_hide(void) {
+	hidden = 1;
+	if (!layer_surface || !surface) return;
+	zwlr_layer_surface_v1_set_exclusive_zone(layer_surface, 0);
+	wl_surface_attach(surface, NULL, 0, 0);   /* 解绑缓冲 -> unmapped，不再绘制也不占位 */
+	wl_surface_commit(surface);
+	write_geom();
+}
+
+static void dock_show(void) {
+	hidden = 0;
+	if (!layer_surface || !surface) return;
+	zwlr_layer_surface_v1_set_exclusive_zone(layer_surface, DOCK_H + MARGIN_BOT);
+	win_w = content_width();
+	win_h = DOCK_H;
+	zwlr_layer_surface_v1_set_size(layer_surface, win_w, win_h);
+	zwlr_layer_surface_v1_set_margin(layer_surface, 0, 0, MARGIN_BOT, (out_w - win_w) / 2);
+	/*
+	 * 这里只能空提交（不带 buffer）。unmap 之后合成器把表面视为"未 configure"，
+	 * 直接 attach 缓冲会被协议拒绝（layer_surface has never been configured）。
+	 * 空提交换一次 configure，ls_configure 里再 alloc_buffer + draw 把缓冲挂回去。
+	 */
+	wl_surface_commit(surface);
+	write_geom();
+}
+
 /* ------------------------------------------------------------- listeners */
 
 static void ls_configure(void *data, struct zwlr_layer_surface_v1 *ls,
@@ -338,7 +374,8 @@ static void ls_configure(void *data, struct zwlr_layer_surface_v1 *ls,
 	zwlr_layer_surface_v1_ack_configure(ls, serial);
 	if (w > 0) win_w = (int)w;
 	if (h > 0) win_h = (int)h;
-	if (win_w != buf_w || win_h != buf_h) alloc_buffer(win_w, win_h);
+	if (win_w != buf_w || win_h != buf_h || !buffer) alloc_buffer(win_w, win_h);
+	if (hidden) { write_geom(); return; }   /* 隐藏期间只 ack，不把缓冲挂回去 */
 	draw();
 	write_geom();
 }
@@ -530,16 +567,10 @@ int main(void) {
 		if (fds[1].revents & POLLIN) {
 			struct signalfd_siginfo si;
 			while (read(sigfd, &si, sizeof si) == sizeof si) {
-				if (si.ssi_signo == SIGUSR1 && !hidden) {
-					hidden = 1;
-					wl_surface_attach(surface, NULL, 0, 0);
-					wl_surface_commit(surface);
-					write_geom();
-				} else if (si.ssi_signo == SIGUSR2 && hidden) {
-					hidden = 0;
-					relayout();
-					write_geom();
-				}
+				if (si.ssi_signo == SIGUSR1)
+					dock_hide();
+				else if (si.ssi_signo == SIGUSR2)
+					dock_show();
 			}
 		}
 	}
