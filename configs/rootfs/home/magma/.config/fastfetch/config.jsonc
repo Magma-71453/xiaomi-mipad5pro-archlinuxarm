@@ -1,0 +1,84 @@
+{
+  "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/master/doc/json_schema.json",
+
+  // fastfetch for Xiaomi Mi Pad 5 Pro (xiaomi-elish).
+  //
+  // The tablet is used in landscape: 1280x800 logical at scale 2, and the default
+  // foot window is only ~107x43 cells. So the fetch has to stay narrow and short:
+  // small ASCII logo, one line per fact, Nerd Font icons instead of words.
+  //
+  // Every icon below was checked against Symbols Nerd Font with
+  // `fc-list ':charset=<cp>' family` on the device; a codepoint that is missing
+  // renders as a hollow box, so verify before adding new ones.
+  //
+  // Two device quirks are worked around here:
+  //  * the fuel gauge exposes TWO batteries (bq27z561-0 / -1), so the built-in
+  //    `battery` module prints two nearly identical lines -> a `command` module
+  //    reads bq27z561-0 directly;
+  //  * `poweradapter` prints an empty line when unplugged -> the charger state is
+  //    folded into the same command line.
+
+  "logo": {
+    "type": "small",
+    "source": "arch",
+    "padding": { "top": 1, "right": 3 },
+    "color": { "1": "38;2;122;162;247", "2": "38;2;115;218;202" }
+  },
+
+  "display": {
+    "separator": " ",
+    "color": { "keys": "38;2;122;162;247" },
+    "key": { "type": "icon", "width": 3 }
+  },
+
+  "modules": [
+    { "type": "title",
+      "color": { "user": "38;2;115;218;202", "at": "38;2;86;95;137", "host": "38;2;122;162;247" } },
+
+    { "type": "separator", "string": "─", "times": 20, "outputColor": "38;2;86;95;137" },
+
+    { "type": "os",       "keyIcon": "\uf303" },
+    { "type": "host",     "keyIcon": "\uf10b" },
+    { "type": "kernel",   "keyIcon": "\uf31a" },
+    { "type": "uptime",   "keyIcon": "\uf017" },
+    { "type": "packages", "keyIcon": "\uf487" },
+    { "type": "shell",    "keyIcon": "\uf120" },
+    { "type": "terminal", "keyIcon": "\uf489" },
+    { "type": "display",  "keyIcon": "\uf108" },
+    { "type": "wm",       "keyIcon": "\uf2d0" },
+
+    { "type": "separator", "string": "─", "times": 20, "outputColor": "38;2;86;95;137" },
+
+    { "type": "cpu",
+      "keyIcon": "\uf2db",
+      "temp": true,
+      "format": "{name} {cores-logical}核 @ {freq-max} {temperature}" },
+    { "type": "gpu",
+      "keyIcon": "\uf26c",
+      "format": "{name}" },
+    { "type": "memory",
+      "keyIcon": "\uf233",
+      "format": "{used} / {total} ({percentage}%)" },
+    { "type": "swap",
+      "keyIcon": "\uf0e4",
+      "format": "{used} / {total} ({percentage}%)" },
+    { "type": "disk",
+      "keyIcon": "\uf0a0",
+      "format": "{size-used} / {size-total} ({size-percentage}%) · {filesystem}" },
+
+    { "type": "separator", "string": "─", "times": 20, "outputColor": "38;2;86;95;137" },
+
+    { "type": "localip",
+      "keyIcon": "\uf0ac",
+      "format": "{ipv4} · {ifname}" },
+    { "type": "wifi",
+      "keyIcon": "\uf1eb",
+      "format": "{protocol} {band} · {signal-quality}% · {security}" },
+    { "type": "command",
+      "keyIcon": "\uf240",
+      "shell": "/bin/sh",
+      "text": "c=$(cat /sys/class/power_supply/bq27z561-0/capacity); s=$(cat /sys/class/power_supply/bq27z561-0/status); a=$(cat /sys/class/power_supply/tcpm-source-psy-c440000.spmi:pmic@2:typec@1500/online 2>/dev/null || echo 0); [ \"$a\" = 1 ] && ch=charging || ch=on-battery; printf '%s%% · %s · %s' \"$c\" \"$s\" \"$ch\"" },
+
+    { "type": "colors", "symbol": "block", "block": { "width": 2 } }
+  ]
+}

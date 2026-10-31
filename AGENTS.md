@@ -159,6 +159,7 @@ GTK 收到的窗口内坐标是 (295.5,196.5)（期望 (300,200)）；(300,200)/
 | 会话启动 | `configs/rootfs/usr/local/bin/mango-shell-start` | 由登录脚本（fish）启动会话；要求开机顺序可靠时应交给 systemd system unit 管理 |
 | 归档 | `configs/mango-shell/mango-bar.c` | 自写 C 状态栏，**已废弃**（mango 不给它派发输入），保留参考 |
 | 槽位切换 | `scripts/build-qbootctl.sh` | 编译 qbootctl；`-s 0` = _a = Android，`-s 1` = _b = Linux |
+| 终端三件套 | `configs/rootfs/home/magma/.config/{fastfetch,htop,btop}/` | 按 107×43 格窗口 + 只有 Nerd Font（无 emoji）重调：fastfetch 图标菜单 + 小 logo、htop Nord + `AllCPUs2` + 温度、btop 自写 `elish` 主题；同步用 `scripts/sync-terminal-configs.sh`，详见 `docs/terminal-tools.md` |
 
 ---
 

@@ -1,0 +1,88 @@
+# elish — btop theme matched to this tablet's waybar palette
+#
+# The bar is a light Material-3-ish card (#F7F8FA / #E2E6ED) with slate text
+# (#1F2430) and one red accent (#D04F61), so the terminal side is kept in the
+# same blue/slate family and only reaches for that red when something is really
+# hot or nearly full. Values are the same hues fastfetch uses in
+# ~/.config/fastfetch/config.jsonc, so both tools read as one product.
+#
+# Install: ~/.config/btop/themes/elish.theme, then set
+#          color_theme = "elish"  in ~/.config/btop/btop.conf
+#
+# Colors are "#RRGGBB". Gradients: start -> mid -> end (mid may be empty).
+
+# Main background; keep it the terminal background so the window keeps its shape.
+theme[main_bg]=""
+
+# Main text color
+theme[main_fg]="#C9D1DD"
+
+# Title color for boxes
+theme[title]="#7AA2F7"
+
+# Highlight color for keyboard shortcuts
+theme[hi_fg]="#73DACA"
+
+# Background color of selected items
+theme[selected_bg]="#2C3444"
+
+# Foreground color of selected items
+theme[selected_fg]="#E6EAF2"
+
+# Color of inactive/disabled text
+theme[inactive_fg]="#565F89"
+
+# Color of text appearing on top of graphs (uptime, network scaling)
+theme[graph_text]="#565F89"
+
+# Misc colors for the processes box (mini graphs, details, status text)
+theme[proc_misc]="#73DACA"
+
+# Box outlines — one quiet slate so the four boxes read as one frame
+theme[cpu_box]="#3B4261"
+theme[mem_box]="#3B4261"
+theme[net_box]="#3B4261"
+theme[proc_box]="#3B4261"
+
+# Box divider line and small boxes line color
+theme[div_line]="#3B4261"
+
+# Temperature graph colors (cool -> warm)
+theme[temp_start]="#73DACA"
+theme[temp_mid]="#E0AF68"
+theme[temp_end]="#D04F61"
+
+# CPU graph colors (idle -> busy)
+theme[cpu_start]="#73DACA"
+theme[cpu_mid]="#7AA2F7"
+theme[cpu_end]="#D04F61"
+
+# Mem/Disk free meter
+theme[free_start]="#2A324A"
+theme[free_mid]=""
+theme[free_end]="#3B4261"
+
+# Mem/Disk cached meter
+theme[cached_start]="#4A6FA5"
+theme[cached_mid]=""
+theme[cached_end]="#7AA2F7"
+
+# Mem/Disk available meter
+theme[available_start]="#6E8CB8"
+theme[available_mid]=""
+theme[available_end]="#9AB3D6"
+
+# Mem/Disk used meter
+theme[used_start]="#B06A8A"
+theme[used_mid]=""
+theme[used_end]="#D04F61"
+
+# Download graph colors
+theme[download_start]="#3E5C8A"
+theme[download_mid]="#7AA2F7"
+theme[download_end]="#A9C3F5"
+
+# Upload graph colors
+theme[upload_start]="#5A4A7A"
+theme[upload_mid]="#9A7AC7"
+theme[upload_end]="#C3A8E8"
