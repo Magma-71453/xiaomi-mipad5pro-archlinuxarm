@@ -219,6 +219,9 @@ schedplace: tracked tid=... start=... rule=... original_mask=0-15 affinity_chang
 
 * 临时停用：`systemctl stop schedplace`（`SIGTERM` 会按 `restore_on_exit` 恢复被改线程
   的原 affinity，并把受管 cpuset 组放宽回在线全集）；
+* 全速 `makepkg` 构建（本机默认规则会把构建钉在小核、慢 ~2.8x）：构建前
+  `systemctl stop schedplace`，构建后 `systemctl start schedplace`；实测与用法见
+  `docs/build-performance.md` §4.3；
 * 彻底卸载：`systemctl disable --now schedplace`、`make uninstall`、删除
   `/sys/fs/cgroup/schedplace`（组为空后 `rmdir`）；
 * 只回退某条规则：把该规则的 `enabled = false`（或删掉），`systemctl restart`；

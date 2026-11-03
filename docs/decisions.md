@@ -175,3 +175,21 @@
   2. initramfs 用 -o ro 探测挂载后必须 mount -o remount,rw（cmdline 是 rw，systemd 需要可写根）；
   3. switch_root 前必须把 /dev /proc /sys /run 用 mount --move 搬进新根，否则新根里是空目录；
   4. 真机调试镜像用 panic=0 便于读屏，正式镜像保持 quiet。
+
+## D-019 makepkg 编译/打包参数按 SM8250 异构拓扑优化（2026-11-04，用户请求）
+- 事实：`cpu-info`（cpuinfo r843）把 8 核全报成 Cortex-A55，与内核实测不符；实际为
+  4×Cortex-A77（MIDR `0x411fd0d0`）+ 4×Kryo-4XX-Silver / A55 派生（MIDR `0x51df805e`）。
+  两簇 Features 交集含 LSE / dotprod / RDM / fp16 / rcpc / crypto，均可用。
+- 决策：CFLAGS 改 `-march=armv8.2-a+dotprod+crc+crypto+fp16+lse+rcpc -mtune=cortex-a77`；
+  FFLAGS / RUSTFLAGS 同步；`PKGEXT=.pkg.tar.zst`（`COMPRESSZST` 带 `-T0`）；BUILDENV 开
+  ccache（缓存上限 10 GB）；LTO 仅单包启用（`-flto=4`）；`-O3`、全局 LTO、lld 默认链接器
+  不采用。`MAKEFLAGS` 保持 `-j$(nproc)`。
+- 实测（详见 `docs/build-performance.md`）：CoreMark +7.4%（A77）/+4.9%（A55）；
+  LSE 原子微基准 ~1.7x；64 MiB 负载打包 xz 23.6 s → zstd 0.62 s；lz4-local 的
+  `build()` 在小核 44.1 s、停 schedplace 后 11.85 s；构建产物在 A55 上运行无 SIGILL。
+- 边界：只影响本机重建的包（ALARM 预编译包仍是通用 armv8-a）；schedplace 规则不修改，
+  构建提速靠临时 `systemctl stop schedplace`（背景见 `configs/perf/schedplace.conf`
+  的 `[rule background-pkg]`）。
+- 落盘：`configs/rootfs/etc/makepkg.conf(+conf.d)` 为真相源，设备副本已同步；旧配置备份
+  `/etc/makepkg.conf.bak-20261104-004012`、`/etc/makepkg.conf.d.bak-20261104-004012`。
+- 回退：还原上述备份并把 `BUILDENV` 的 `ccache` 改回 `!ccache`。

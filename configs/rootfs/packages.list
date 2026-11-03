@@ -43,6 +43,8 @@ htop
 cjson
 git
 base-devel
+# ccache: makepkg 编译缓存（BUILDENV=(ccache)，见 docs/build-performance.md）
+ccache
 meson
 cmake
 ninja
