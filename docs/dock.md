@@ -26,13 +26,14 @@
 
 | 名称 | 路径 / 值 | 生产者 | 消费者 | 含义 |
 |---|---|---|---|---|
-| `SIGUSR1` | —— | autohide / toggle | `mango-dock` | 隐藏：`set_exclusive_zone(0)` + `attach(NULL)` + commit（= unmap，不占位、不绘制） |
-| `SIGUSR2` | —— | autohide / toggle | `mango-dock` | 显示：恢复 zone 82 (= `DOCK_H` 68 + `MARGIN_BOT` 14) + 重设 size/margin + **空 commit**，等 configure 再挂缓冲 |
+| `SIGUSR1` | —— | autohide / toggle | `mango-dock` | 隐藏：`set_exclusive_zone(0)` + input region 置空 + 同一块缓冲重绘成**全透明**；表面**不 unmap**（见第 8 节） |
+| `SIGUSR2` | —— | autohide / toggle | `mango-dock` | 显示：恢复 zone 82 (= `DOCK_H` 68 + `MARGIN_BOT` 14) + input region 置 `NULL`（整面可交互）+ 立刻重绘 |
 | `mango-dock.geom` | `$XDG_RUNTIME_DIR/mango-dock.geom` | `mango-dock`（每次状态变化） | autohide / toggle | 五个空格分隔的整数：`x y w h hidden`；**最后一个字段 = dock 自己认为的隐藏态** |
 | `mango-dock-autohide.state` | `$XDG_RUNTIME_DIR/mango-dock-autohide.state` | toggle 写、autohide 消费 | autohide | 文本，取值见下表；`auto` 时 autohide 不做任何 re-assert |
 | `mango-dock-autohide.state.tmp` | 同上 + `.tmp` | autohide / toggle | —— | 写入中间文件再 `os.replace()`，避免读到半行 |
 | `mango-dock-toggle.lock` | `$XDG_RUNTIME_DIR/mango-dock-toggle.lock` | toggle | toggle | `flock(LOCK_EX\|LOCK_NB)`，并发第二次调用直接退出 0 |
 | `mango-dock-autohide.log` | `$XDG_RUNTIME_DIR/mango-dock-autohide.log` | autohide | 人 | 每次连接/施加都记一行；超过 64 KiB 自截断 |
+| `mango-dock.log` | `$XDG_RUNTIME_DIR/mango-dock.log` | `mango-dock-super` 循环 | 人 | dock 自己的 stderr + 每次退出的 rc/时间；超过 128 KiB 在下一轮启动前截断 |
 
 `$XDG_RUNTIME_DIR` 在设备上是 `/run/user/1000`（由 `mango-shell-start` 设定）。
 两个 Python 脚本在环境变量缺失/目录不存在时回落到 `/run/user/$(id -u)`。
@@ -203,26 +204,49 @@ awk '{print $14+$15}' /proc/$pid/stat; sleep 10; awk '{print $14+$15}' /proc/$pi
 
 1. **物理面板的真手指手势没有验证过**。只用电容屏 `uinput` 注入验证了判定逻辑；真手指是否被 libinput 以相同顺序报 slot、是否会出现额外的 slot 抖动，未实测。
 2. **`mango-touchd` 只打开物理面板节点**（按 `name=NVTCapacitiveTouchScreen` 在 `/sys/class/input` 找并长期持有 fd），**不会打开注入出来的 uinput 节点**。所以"注入手势验证 touchd"必须把 touchd 直接指到那个 event 节点（root，且 `XDG_RUNTIME_DIR` 指向只有 `wayland-*` + 假 `mango-99999.sock` 的临时目录），否则验证不到。
-3. **dock 崩溃后不会自动重启**：没有 supervise，需要跑一次 `/usr/local/bin/mango-shell-start`（autohide 只在 dock 换 pid 时重新施加规则，不负责拉起它）。
-4. **mango 0.18.3 的 maximize 窗口不受 layer exclusive_zone 影响**：实测 zone=82 与 zone=0 下，最大化窗口都是 1260×730。所以隐藏时把 zone 归零是**协议上正确的行为**，而不是这个 bug 的成因——别指望靠调 zone 让 dock 不遮挡最大化窗口，遮挡与否由 layer 顺序决定。
+3. **dock 由 `mango-dock-super` 循环盯着**（`mango-shell-start` 里起；退出 1 s 后重启，stderr 落 `$XDG_RUNTIME_DIR/mango-dock.log`）。手工 `setsid mango-dock` 起的实例没有这层保护。
+4. **隐藏时表面仍然 mapped**：`mango-dispatch get all-layers` 会一直列出 `mango-dock`，不能再拿它判断 dock 可见性；唯一可信的是 `mango-dock.geom` 最后一个字段（1 = 隐藏）。
+5. **mango 0.18.3 的 maximize 窗口不受 layer exclusive_zone 影响**：实测 zone=82 与 zone=0 下，最大化窗口都是 1260×730。所以隐藏时把 zone 归零是**协议上正确的行为**，而不是这个 bug 的成因——别指望靠调 zone 让 dock 不遮挡最大化窗口，遮挡与否由 layer 顺序决定。
 
 ---
 
-## 8. 关键坑：unmap 之后再 attach buffer 会被合成器杀掉
+## 8. 关键坑：dock 绝对不能 unmap（协议错误会静默杀掉它）
 
-隐藏用 `wl_surface_attach(surface, NULL, ...)` = 解绑缓冲 = 表面转 unmapped。此时若试图**直接** attach 一个新缓冲把它带回来：
+**结论：显隐只改属性 + 重绘，永远不做 `attach(NULL)`。**
+
+历史上三版都踩过这个 family 的坑：
+
+| 版本 | 现象 | 原因 |
+|---|---|---|
+| B-054 之前 | 隐藏一次之后再也回不来 | `relayout()` 不重新 attach，表面永远停在 unmapped |
+| B-054 引入的写法 | 平时正常，**全屏窗口在场时**偶发（30 轮 hide/show 崩 10 轮）：dock 消失、`ps` 里没有 `mango-dock`、geom 停在 hidden=1 | 见下 |
+| 现在（B-056） | —— | 不再 unmap |
+
+`attach(NULL)` 是 unmap 提交，wlroots `layer_surface_role_commit()` 会走
+`layer_surface_reset()`，把**整个 `configure_list` 清空**；此后 client 再 ack 任何
+"这次提交之前发出的" configure，就命中：
 
 ```
-zwlr_layer_surface_v1 error 2: layer_surface has never been configured
+zwlr_layer_surface_v1: error 0: wrong configure serial: N
 ```
 
-合成器按协议断开连接，dock 直接被杀死（表现为"显示一下又没了"，日志里就是上面一行）。
+合成器立刻断开连接 —— dock 是干净退出（无 core、无日志；stderr 当年还被丢进
+`/dev/null`），外部看起来和"被隐藏"完全一样，于是"三指上滑也呼不出来"。
 
-正确顺序（`dock_show()` 现在的写法）：
+同一份代码里另有一条同源限制：unmap 之后**直接** attach 缓冲会被拒
+（`error 2: layer_surface has never been configured`），必须空提交换 configure。
 
-1. `set_exclusive_zone(DOCK_H + MARGIN_BOT)`、`set_size`、`set_margin`；
-2. `wl_surface_commit(surface)` —— **空提交，不带 buffer**，目的只是换一次 configure；
-3. 在 `ls_configure` 里 `ack_configure` 后 `alloc_buffer()`（判据加了 `!buffer` 兜底）再 `draw()`；
-4. `hidden` 为真时 configure 只 ack + 写 geom，**不把缓冲挂回去**。
+现行写法（`dock_hide()` / `dock_show()`）：
 
-回归细节记在 `bug.md` B-054。
+1. 隐藏 = `set_exclusive_zone(0)` + `set_input_region(空 region)` + 同一块缓冲重绘成
+   全透明；显示 = zone 82 + `set_input_region(NULL)` + 立刻重绘；
+2. 表面**始终 mapped** ⇒ 不会 reset，两类协议错误都不会出现；
+3. `configure` 只在回调里记录，本轮 `wl_dispatch` 结束后由 `apply_configure()`
+   **只 ack 最新的一个**（wlroots 的 ack 会把列表里更旧的条目一并丢弃，逐个 ack 会自己
+   踩自己）；
+4. 首个 configure 被 ack 之前（`acked == 0`）只能空提交属性。
+
+配套：`mango-shell-start` 用 `sh -c 'while :; do …; done' mango-dock-super` 盯着
+dock，退出 1 s 后重启，stderr 落 `$XDG_RUNTIME_DIR/mango-dock.log`。
+
+回归细节记在 `bug.md` B-054 / B-056。

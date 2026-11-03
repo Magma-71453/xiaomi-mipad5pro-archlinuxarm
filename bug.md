@@ -835,3 +835,45 @@
   `mango-touchd → mango-dock-toggle → mango-dock`（dock 隐藏且 state=manual-hidden）；
   `swipe 3 200 400 900 400` 三指横滑仍切 tag；`swipe 4 400 600 400 200` 四指竖滑仍是 overview。
   回归还确认：三指上滑**不再**触发 `toggleoverview`。
+
+## B-056 全屏 Waydroid 游戏把 dock 逼死后彻底消失（unmap → `wrong configure serial`）
+
+- 现象：启动 Waydroid 的《植物大战僵尸》并全屏后，dock 被自动隐藏（这是设计），但**再也叫不回来**：
+  三指上滑毫无反应，`mango-dock-toggle` 打印 `dock -> shown`、state 文件照常翻转，
+  `/run/user/1000/mango-dock-autohide.log` 里是 `manual-shown consumed -> auto (rule held at 1)`，
+  而屏幕上什么都没有。`ps` 里**没有 `mango-dock`**，geom 停在 hidden=1。
+- 根因：dock 进程是**协议错误静默退出**，不是"被隐藏"，也没有任何东西负责把它拉回来。
+  1. 全屏窗口出现 → `mango-dock-autohide` 发 `SIGUSR1` → `dock_hide()` 用 `attach(NULL)`
+     隐藏 = **unmap 提交**；
+  2. wlroots `layer_surface_role_commit()` 对 unmap 提交调 `layer_surface_reset()`，
+     **清空整个 `configure_list`**（`wlroots-0.20.2 types/wlr_layer_shell_v1.c:392`）；
+  3. mango 在每次 unmap/hide 提交后都会再发 configure，client 收到后 ack 的 serial 已经被
+     reset 掉 → `zwlr_layer_surface_v1: error 0: wrong configure serial: N` → 连接被断开；
+  4. dock 的退出路径是 `wl_display_dispatch() < 0 → return 0`（干净退出，无 core、无日志），
+     而 `mango-shell-start` 当年是裸 `setsid mango-dock >/dev/null 2>&1`：**没有 supervisor、
+     stderr 全丢**，于是"进程死了"和"被隐藏"从外部完全无法区分；
+  5. 之后的每次三指上滑都只是给一个不存在的 pid 发 `SIGUSR2`，所以毫无反应。
+- 复现（修复前，全屏窗口在场 + 反复 hide/show）：30 轮里崩 10 轮；单次 hide 也有概率中招，
+  所以用户侧表现为"偶发、一旦发生就永久消失"。
+  `WAYLAND_DEBUG=1` 抓到的最后一段就是：`ack_configure(2687)` 之后
+  `wl_display.error(..., "wrong configure serial: 2687")`。
+- 修复（`configs/mango-shell/mango-dock.c`、`configs/rootfs/usr/local/bin/mango-shell-start`）：
+  - **隐藏不再 unmap**：`set_exclusive_zone(0)` + `wl_surface_set_input_region(空 region)` +
+    同一块缓冲重绘成全透明（`draw_blank()`）；显示 = zone 82 + `set_input_region(NULL)` + 重绘。
+    表面始终 mapped ⇒ 不再有 `layer_surface_reset()`；
+  - `configure` 只记录，本轮 dispatch 结束由 `apply_configure()` **只 ack 最新的一个**；
+  - 首个 configure 被 ack 之前（`acked == 0`）只允许空提交，否则就是
+    `error 2: layer_surface has never been configured`；
+  - 隐藏态下指针/触摸回调直接返回，避免在飞事件把 dock 画回来或误启动应用；
+  - `mango-shell-start` 把 dock 交给 `sh -c 'while :; do …; done' mango-dock-super` 看护：
+    退出 1 s 后重启，stderr 与退出码写进 `$XDG_RUNTIME_DIR/mango-dock.log`（超 128 KiB 截断）。
+- 验证：
+  ```sh
+  # 1) 全屏窗口在场 + 1200 次 hide/show 压测：0 次死亡（修复前 30 轮崩 10 轮）
+  # 2) 真实场景：PvZ 全屏 → geom 末字段=1 且 pid 不变；跑 toggle → geom=0，dock 出现在游戏画面之上
+  # 3) supervisor：kill -9 dock → 2.5 s 内新 pid，mango-dock.log 里一行 "=== mango-dock exited rc=137 … ==="
+  # 4) 隐藏态不吃触摸：debug 版 dock 打点，可见时 tap 命中 (ptr_enter+tch_down)，
+  #    隐藏后同一坐标注入 tap 一条都不来（input region 生效）
+  ```
+- 结论/教训：**layer-shell 表面的显隐不要用 unmap 做**；一旦必须有进程常驻，就一定要有
+  supervisor + 保留 stderr，否则"被杀"与"被隐藏"在外部不可区分、且用户只看得到"没反应"。

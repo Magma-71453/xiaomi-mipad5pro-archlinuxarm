@@ -152,6 +152,9 @@ static int scale = 2;
 static int out_w = 1280, out_h = 800;   /* logical output size */
 static int win_w = 300, win_h = DOCK_H; /* surface size (logical) */
 static int hidden = 0;
+static int acked;                       /* 已 ack 过 configure：此前挂缓冲是协议错误 */
+static uint32_t pend_serial;            /* newest configure, not acked yet */
+static int pend_w, pend_h;
 static int pointer_x = -1, pointer_y = -1;
 static int hover = -1;
 
@@ -212,6 +215,13 @@ static int hit_test(double x, double y) {
 }
 
 /* --------------------------------------------------------------- drawing */
+
+/* 把整块缓冲挂回去：唯一一处 attach/damage/commit，draw 与 draw_blank 共用 */
+static void present(void) {
+	wl_surface_attach(surface, buffer, 0, 0);
+	wl_surface_damage_buffer(surface, 0, 0, win_w * scale, win_h * scale);
+	wl_surface_commit(surface);
+}
 
 static void draw(void) {
 	if (!buffer) return;
@@ -283,9 +293,22 @@ static void draw(void) {
 	cairo_surface_flush(cs);
 	cairo_surface_destroy(cs);
 
-	wl_surface_attach(surface, buffer, 0, 0);
-	wl_surface_damage_buffer(surface, 0, 0, win_w * scale, win_h * scale);
-	wl_surface_commit(surface);
+	present();
+}
+
+/* 隐藏时把同一块缓冲填成全透明：表面保持 mapped（见 dock_hide 的说明） */
+static void draw_blank(void) {
+	if (!buffer) return;
+	cairo_surface_t *cs = cairo_image_surface_create_for_data(
+		pixels, CAIRO_FORMAT_ARGB32, win_w * scale, win_h * scale, win_w * scale * 4);
+	cairo_t *cr = cairo_create(cs);
+	cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+	cairo_set_source_rgba(cr, 0, 0, 0, 0);
+	cairo_paint(cr);
+	cairo_destroy(cr);
+	cairo_surface_flush(cs);
+	cairo_surface_destroy(cs);
+	present();
 }
 
 /* ------------------------------------------------------------- geometry */
@@ -333,19 +356,27 @@ static void relayout(void) {
 /* ----------------------------------------------------------- visibility */
 
 /*
- * 显隐是两条自洽的状态迁移，可以重复调用（hide 后再 hide 仍是隐藏）。
- * 旧实现只在 hidden 翻转时做半套动作：hide 用 attach(NULL) 解绑了缓冲，
- * show 却只 relayout() 不重新 attach，于是表面一直是 unmapped ——
- * 第二次 SIGUSR1/USR2 之后就再也看不到 dock。
+ * 显隐只改两个属性，永远不 unmap：
+ *   - exclusive zone：只在可见时占位（隐藏后别把整条底部空间留成死区）
+ *   - input region：隐藏时换成空 region，否则一块透明 overlay 会吃掉底部的触摸
+ *   - 画面：隐藏 = 同一块缓冲重绘成全透明
+ *
+ * 为什么不再 attach(NULL)：那次提交是 unmap 提交，wlroots 会走
+ * layer_surface_reset() 把 configure_list 整个清空；此后 client 再 ack 之前发出
+ * 的 configure 就是协议错误 "wrong configure serial"，连接被断、进程静默退出。
+ * 表面一直 mapped 就没有 reset，也不会出现 "layer_surface has never been
+ * configured" 那一类问题。
  */
+static struct wl_region *empty_region;
 
-/* exclusive zone 只在可见时占位；改完必须 commit 才生效（两个函数下面都提交了） */
 static void dock_hide(void) {
 	hidden = 1;
 	if (!layer_surface || !surface) return;
 	zwlr_layer_surface_v1_set_exclusive_zone(layer_surface, 0);
-	wl_surface_attach(surface, NULL, 0, 0);   /* 解绑缓冲 -> unmapped，不再绘制也不占位 */
-	wl_surface_commit(surface);
+	if (!empty_region) empty_region = wl_compositor_create_region(compositor);
+	wl_surface_set_input_region(surface, empty_region);
+	/* 首个 configure 被 ack 之前挂缓冲会被合成器拒绝，只能空提交属性 */
+	if (acked) draw_blank(); else wl_surface_commit(surface);
 	write_geom();
 }
 
@@ -353,29 +384,43 @@ static void dock_show(void) {
 	hidden = 0;
 	if (!layer_surface || !surface) return;
 	zwlr_layer_surface_v1_set_exclusive_zone(layer_surface, DOCK_H + MARGIN_BOT);
+	wl_surface_set_input_region(surface, NULL);   /* NULL = 整面可交互 */
 	win_w = content_width();
 	win_h = DOCK_H;
 	zwlr_layer_surface_v1_set_size(layer_surface, win_w, win_h);
 	zwlr_layer_surface_v1_set_margin(layer_surface, 0, 0, MARGIN_BOT, (out_w - win_w) / 2);
-	/*
-	 * 这里只能空提交（不带 buffer）。unmap 之后合成器把表面视为"未 configure"，
-	 * 直接 attach 缓冲会被协议拒绝（layer_surface has never been configured）。
-	 * 空提交换一次 configure，ls_configure 里再 alloc_buffer + draw 把缓冲挂回去。
-	 */
-	wl_surface_commit(surface);
+	if (acked) draw(); else wl_surface_commit(surface);
 	write_geom();
 }
 
 /* ------------------------------------------------------------- listeners */
 
+/*
+ * configure 只记录，ack 一律推迟到本轮 dispatch 结束（apply_configure），并且
+ * 只 ack 最新的一个：wlroots 的 ack 会把 configure_list 里比它更旧的条目一并
+ * 丢掉（types/wlr_layer_shell_v1.c 的 ack_configure），所以按到达顺序逐个 ack
+ * 会在"同一批里连来多个 configure"时自己踩自己。
+ */
 static void ls_configure(void *data, struct zwlr_layer_surface_v1 *ls,
 			 uint32_t serial, uint32_t w, uint32_t h) {
-	(void)data;
-	zwlr_layer_surface_v1_ack_configure(ls, serial);
-	if (w > 0) win_w = (int)w;
-	if (h > 0) win_h = (int)h;
+	(void)data; (void)ls;
+	pend_serial = serial;
+	pend_w = (int)w;
+	pend_h = (int)h;
+}
+
+/* ack 最新的 configure 并把缓冲挂回去（本轮事件全部处理完之后才调用） */
+static void apply_configure(void) {
+	if (!pend_serial) return;
+	uint32_t serial = pend_serial;
+	pend_serial = 0;
+	zwlr_layer_surface_v1_ack_configure(layer_surface, serial);
+	acked = 1;
+	if (pend_w > 0) win_w = pend_w;
+	if (pend_h > 0) win_h = pend_h;
 	if (win_w != buf_w || win_h != buf_h || !buffer) alloc_buffer(win_w, win_h);
-	if (hidden) { write_geom(); return; }   /* 隐藏期间只 ack，不把缓冲挂回去 */
+	/* 隐藏期间重新 alloc 出来的是未初始化内存，必须补一帧全透明 */
+	if (hidden) { draw_blank(); write_geom(); return; }
 	draw();
 	write_geom();
 }
@@ -387,21 +432,22 @@ static void ptr_enter(void *d, struct wl_pointer *p, uint32_t s, struct wl_surfa
 	(void)d; (void)p; (void)s; (void)sf;
 	pointer_x = wl_fixed_to_int(x); pointer_y = wl_fixed_to_int(y);
 	int h = hit_test(pointer_x, pointer_y);
-	if (h != hover) { hover = h; draw(); }
+	if (!hidden && h != hover) { hover = h; draw(); }
 }
 static void ptr_leave(void *d, struct wl_pointer *p, uint32_t s, struct wl_surface *sf) {
 	(void)d; (void)p; (void)s; (void)sf;
 	pointer_x = pointer_y = -1;
-	if (hover != -1) { hover = -1; draw(); }
+	if (!hidden && hover != -1) { hover = -1; draw(); }
 }
 static void ptr_motion(void *d, struct wl_pointer *p, uint32_t t, wl_fixed_t x, wl_fixed_t y) {
 	(void)d; (void)p; (void)t;
 	pointer_x = wl_fixed_to_int(x); pointer_y = wl_fixed_to_int(y);
 	int h = hit_test(pointer_x, pointer_y);
-	if (h != hover) { hover = h; draw(); }
+	if (!hidden && h != hover) { hover = h; draw(); }
 }
 static void ptr_button(void *d, struct wl_pointer *p, uint32_t s, uint32_t t, uint32_t b, uint32_t st) {
 	(void)d; (void)p; (void)s; (void)t;
+	if (hidden) return;
 	if (b != BTN_LEFT || st != WL_POINTER_BUTTON_STATE_PRESSED) return;
 	int i = hit_test(pointer_x, pointer_y);
 	if (i >= 0) spawn(apps[i].cmd);
@@ -422,6 +468,7 @@ static const struct wl_pointer_listener pointer_listener = {
 
 static void tch_down(void *d, struct wl_touch *t, uint32_t s, uint32_t tm, struct wl_surface *sf, int32_t id, wl_fixed_t x, wl_fixed_t y) {
 	(void)d;(void)t;(void)s;(void)tm;(void)sf;(void)id;
+	if (hidden) return;
 	int i = hit_test(wl_fixed_to_int(x), wl_fixed_to_int(y));
 	if (i >= 0) spawn(apps[i].cmd);
 }
@@ -573,6 +620,7 @@ int main(void) {
 					dock_show();
 			}
 		}
+		apply_configure();
 	}
 	return 0;
 }
