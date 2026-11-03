@@ -2,12 +2,17 @@
 
 **结论先行**：平板横屏是 **1280×800 逻辑像素、scale 2**，默认 `foot` 窗口只有 **107×43 格**
 （实测 `stty size` = `43 107`），而且**没有 emoji 字体**（只有 `Symbols Nerd Font` +
-`Noto Sans CJK SC`）。所以三件套的改动只有一个方向：**窄、短、单行、用 Nerd Font 图标代替文字**。
-配色全部落在 waybar 同一套色板（`#7AA2F7` 蓝 / `#73DACA` 青 / `#565F89` 灰 / `#D04F61` 红）上。
+`Noto Sans CJK SC`）。
+
+两类的做法不同：
+
+- **htop / btop**：**窄、短、单行、用 Nerd Font 图标代替文字**，配色落在 waybar 同一套色板
+  （`#7AA2F7` 蓝 / `#73DACA` 青 / `#565F89` 灰 / `#D04F61` 红）。
+- **fastfetch**：本机个人版——**图片 logo（`kitty-direct`）+ 分组配色**，见 2.2。
 
 | 工具 | 仓库里的文件 | 关键改动 |
 |---|---|---|
-| fastfetch | `configs/rootfs/home/magma/.config/fastfetch/config.jsonc` | 小号 arch logo；`key.type=icon`；三段 `─` 分隔；CPU 带温度、电池单行 |
+| fastfetch | `configs/rootfs/home/magma/.config/fastfetch/config.jsonc` + `configs/rootfs/home/magma/.local/share/fastfetch/tux.png` | `logo.type=kitty-direct` 显示 PNG（`auto` 只出 `PNG` 占位符）；`key.type=both` + `width=16` 对齐；分组配色 |
 | htop | `configs/rootfs/home/magma/.config/htop/htoprc` | `color_scheme=7`（Nord）；`AllCPUs2` + 温度；列改成 `PID USER RES SHR S CPU% MEM% TIME+ Command` |
 | btop | `configs/rootfs/home/magma/.config/btop/{btop.conf,themes/elish.theme}` | 自写 `elish` 主题；`update_ms=1000`；固定温度传感器与电池 |
 
@@ -44,47 +49,55 @@
 
 ### 2.2 现在的做法
 
-```jsonc
-"logo":  { "type": "small", "source": "arch", "padding": { "top": 1, "right": 3 } }
-"display": { "key": { "type": "icon", "width": 3 } }
-```
-
-- **小号 logo**（`type: "small"`）而不是完整 ASCII art：完整版宽 20 列、高 20+ 行，
-  会把右侧信息压到屏幕中部。
-- **图标当 key**：`key.type = "icon"` 让每个模块前面显示一个 Nerd Font 图标，
-  比 `OS/Kernel/CPU` 这些英文单词省 6–9 列。`width: 3` 保证图标列对齐。
-- **三段分隔**：`{ "type": "separator", "string": "─", "times": 20 }` 把输出分成
-  「系统 / 硬件 / 网络与电源」三块，扫读快。
-- **CPU 带温度**：`"temp": true` + `format: "{name} {cores-logical}核 @ {freq-max} {temperature}"`。
-  fastfetch 会自己找到 thermal zone，不需要指定传感器路径。
-- **电池单行**：`battery` 模块会把两个 fuel gauge 都打出来，所以改成 `command` 模块自己读
-  `bq27z561-0`，并把充电器状态（`tcpm-.../online`）拼进同一行：
+conf 是**本机个人版**（`fastfetch --gen-config` 起手后自行改写），不是仓库早期那版
+「窄、短、单行」的最小化配置。要点：
 
 ```jsonc
-{ "type": "command", "keyIcon": "\uf240", "shell": "/bin/sh",
-  "text": "c=$(cat /sys/class/power_supply/bq27z561-0/capacity); ..." }
+"logo": {
+  "type": "kitty-direct",   // 关键：必须显式写协议
+  "source": "/home/magma/.local/share/fastfetch/tux.png",
+  "width": 25, "height": 16,
+  "padding": { "left": 2, "top": 1 }
+}
+"display": { "separator": "", "key": { "width": 16, "type": "both" } }
 ```
 
-输出：`77% · Discharging · on-battery`。
+| 设定 | 值 | 原因 |
+|---|---|---|
+| `logo.type` | `kitty-direct` | **`auto` 渲染不了 PNG**：它把图片当成名为 `PNG` 的文字占位符打印。实测 `auto` 与 `kitty-direct` 的区别就是「一个 `PNG` 字样」与「真图」 |
+| `logo.source` | `~/.local/share/fastfetch/tux.png` | 图片资产放在 `~/.local/share/fastfetch/`，与 `~/.config` 分离 |
+| `logo.width/height` | 25 / 16 | 以字符格为单位（不是像素） |
+| `key.type` | `both` | 图标 + 英文标签同时显示 |
+| `key.width` | 16 | 标签列对齐 |
+| `keyColor` | `32` / `33` / `31` / `34` | 按分组用终端 16 色：绿=系统、黄=负载、红=桌面、蓝=运行时 |
+
+**图片必须是不透明或自带透明通道**。本机 `tux.png` 是**白底不透明**（四角均
+`(255,255,255,255)`，全图透明像素数 0），所以在深色终端里显示为一块白方块。
+若要去底：
+
+```sh
+magick tux.png -fuzz 8% -transparent white tux.png   # 注意：会连白肚皮一起抠掉
+```
 
 ### 2.3 验证
 
 ```sh
-# 1) 语法/字段名对不对（未知字段会直接报错并指出行号）
+# 1) 配置能否被解析
 fastfetch --config ~/.config/fastfetch/config.jsonc
 
-# 2) 图标码位是否真的有字形（缺了就换一个，不要凭猜）
-for cp in f303 f10b f31a f017 f487 f120 f489 f108 f2d0 f2db f108 f233 f0e4 f0a0 f0ac f1eb f240; do
+# 2) 图片是否真的显示（而不是 PNG 占位符）
+#    在 kitty 里跑，窗口右侧应出现图片；若只有 "PNG" 字样就是 type 写错了
+kitty -1 -e fastfetch
+
+# 3) 图标码位是否真有字形（key.type=both 时用到）
+for cp in f015 f1c0; do
     printf '%s %s\n' "$cp" "$(fc-list ":charset=$cp" family 2>/dev/null | head -1)"
 done
-
-# 3) 在真实窗口里看（设备上）
-foot -e 'fastfetch; sleep 25' &
-XDG_RUNTIME_DIR=/run/user/1000 mango-dispatch dispatch togglemaximizescreen client,<id>
-grim /tmp/ff.png
 ```
 
-期望：`fastfetch` 约 **80 ms** 跑完（实测 80 ms），输出 ≤ 24 行、最长行 ≤ 60 列。
+期望：图片正常显示、标签列对齐、四组颜色区分明显。
+
+---
 
 ---
 
@@ -212,19 +225,29 @@ CPU 柱状图是 青→蓝→红 三段渐变。
 
 ## 5. 同步到设备（不重刷）
 
-仓库里 `configs/rootfs/home/magma/.config/...` 是真相源。同步只需四个文件：
+仓库里 `configs/rootfs/home/magma/` 是真相源。同步三个工具的配置 + 一张图片：
 
 ```sh
 DEVICE_IP="<device-ip>"
 set -o pipefail
 tar -czf - -C configs/rootfs/home/magma \
   .config/fastfetch/config.jsonc \
+  .local/share/fastfetch/tux.png \
   .config/htop/htoprc \
   .config/btop/btop.conf \
   .config/btop/themes/elish.theme \
   | dbclient -i ~/.ssh/dropbear_ed25519_host_key "magma@${DEVICE_IP}" \
       'tar -xzf - -C "$HOME"'
 ```
+
+> **图片资产为什么入库**：`tux.png`（114 KiB）是 fastfetch 的**运行时依赖**，不是文档插图。
+> AGENTS.md §2 第 3 条「仓库不跟踪任何二进制」针对的是构建产物（`*.img` / `*.ko` /
+> `pkg.tar.*`，见 `scripts/audit-hygiene.sh` 的 `ARTIFACT_GLOBS`）；一份 114 KiB 的
+> PNG 不会让仓库膨胀，却能让设备复现出同样的界面。仓库里 `docs/research/*.png`
+> 已是同样性质的文件。**新增图片请先确认体积 < 200 KiB**。
+>
+> 设备上有两张图：`tux.png`（入库）与 `<wallpaper>.png`（758 KiB，**个人偏好，不入库**）。
+> 配置里 `logo.source` 指向后者时，clone 下来的仓库无法复现——所以入库的是 `tux.png`。
 
 ### 必须核对内容真的变了
 

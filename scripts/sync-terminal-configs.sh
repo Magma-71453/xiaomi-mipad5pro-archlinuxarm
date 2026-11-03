@@ -25,6 +25,7 @@ SRC="$REPO_ROOT/configs/rootfs/home/$DEV_USER"
 
 FILES=(
   ".config/fastfetch/config.jsonc"
+  ".local/share/fastfetch/tux.png"
   ".config/htop/htoprc"
   ".config/btop/btop.conf"
   ".config/btop/themes/elish.theme"
@@ -47,7 +48,7 @@ trap 'rm -rf "$TMP"' EXIT
 tar -czf "$TMP/terminal-configs.tar.gz" -C "$SRC" "${FILES[@]}"
 echo "==> 打包 $(stat -c %s "$TMP/terminal-configs.tar.gz") 字节"
 
-dc "sh -c 'mkdir -p \$HOME/.config/btop/themes'"
+dc "sh -c 'mkdir -p \$HOME/.config/btop/themes \$HOME/.local/share/fastfetch'"
 dc 'sh -c "cat > /tmp/terminal-configs.tar.gz"' < "$TMP/terminal-configs.tar.gz"
 dc "sh -c 'cd \$HOME && tar -xzf /tmp/terminal-configs.tar.gz && rm -f /tmp/terminal-configs.tar.gz'"
 echo "==> 已解包到 \$HOME"
@@ -76,6 +77,6 @@ if [ "$fail" -ne 0 ]; then
 fi
 
 echo "==> 全部一致。重启对应程序即可看到新外观："
-echo "      foot -e fastfetch"
-echo "      foot -e htop"
-echo "      foot -e btop"
+echo "      kitty -1 -e fastfetch   # 图片 logo 需要 kitty 的图形协议，foot 不行"
+echo "      kitty -1 -e htop"
+echo "      kitty -1 -e btop"

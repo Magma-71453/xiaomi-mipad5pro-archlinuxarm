@@ -1,84 +1,168 @@
 {
   "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/master/doc/json_schema.json",
-
-  // fastfetch for Xiaomi Mi Pad 5 Pro (xiaomi-elish).
-  //
-  // The tablet is used in landscape: 1280x800 logical at scale 2, and the default
-  // foot window is only ~107x43 cells. So the fetch has to stay narrow and short:
-  // small ASCII logo, one line per fact, Nerd Font icons instead of words.
-  //
-  // Every icon below was checked against Symbols Nerd Font with
-  // `fc-list ':charset=<cp>' family` on the device; a codepoint that is missing
-  // renders as a hollow box, so verify before adding new ones.
-  //
-  // Two device quirks are worked around here:
-  //  * the fuel gauge exposes TWO batteries (bq27z561-0 / -1), so the built-in
-  //    `battery` module prints two nearly identical lines -> a `command` module
-  //    reads bq27z561-0 directly;
-  //  * `poweradapter` prints an empty line when unplugged -> the charger state is
-  //    folded into the same command line.
-
   "logo": {
-    "type": "small",
-    "source": "arch",
-    "padding": { "top": 1, "right": 3 },
-    "color": { "1": "38;2;122;162;247", "2": "38;2;115;218;202" }
+    "type": "kitty-direct", // kitty 图形协议：直接显示图片（auto 会把 PNG 当成文字占位符）
+    "source": "/home/magma/.local/share/fastfetch/tux.png",
+    "width": 25,
+    "height": 16,
+    "padding": {
+      "left": 2,
+      "top": 1
+    }
   },
-
   "display": {
-    "separator": " ",
-    "color": { "keys": "38;2;122;162;247" },
-    "key": { "type": "icon", "width": 3 }
+    "separator": "", // Separator between keys and values
+    "key": {
+      "width": 16, // Aligns keys to this width
+      "type": "both" // string, icon, both, or none
+    }
   },
-
   "modules": [
-    { "type": "title",
-      "color": { "user": "38;2;115;218;202", "at": "38;2;86;95;137", "host": "38;2;122;162;247" } },
-
-    { "type": "separator", "string": "─", "times": 20, "outputColor": "38;2;86;95;137" },
-
-    { "type": "os",       "keyIcon": "\uf303" },
-    { "type": "host",     "keyIcon": "\uf10b" },
-    { "type": "kernel",   "keyIcon": "\uf31a" },
-    { "type": "uptime",   "keyIcon": "\uf017" },
-    { "type": "packages", "keyIcon": "\uf487" },
-    { "type": "shell",    "keyIcon": "\uf120" },
-    { "type": "terminal", "keyIcon": "\uf489" },
-    { "type": "display",  "keyIcon": "\uf108" },
-    { "type": "wm",       "keyIcon": "\uf2d0" },
-
-    { "type": "separator", "string": "─", "times": 20, "outputColor": "38;2;86;95;137" },
-
-    { "type": "cpu",
-      "keyIcon": "\uf2db",
-      "temp": true,
-      "format": "{name} {cores-logical}核 @ {freq-max} {temperature}" },
-    { "type": "gpu",
-      "keyIcon": "\uf26c",
-      "format": "{name}" },
-    { "type": "memory",
-      "keyIcon": "\uf233",
-      "format": "{used} / {total} ({percentage}%)" },
-    { "type": "swap",
-      "keyIcon": "\uf0e4",
-      "format": "{used} / {total} ({percentage}%)" },
-    { "type": "disk",
-      "keyIcon": "\uf0a0",
-      "format": "{size-used} / {size-total} ({size-percentage}%) · {filesystem}" },
-
-    { "type": "separator", "string": "─", "times": 20, "outputColor": "38;2;86;95;137" },
-
-    { "type": "localip",
-      "keyIcon": "\uf0ac",
-      "format": "{ipv4} · {ifname}" },
-    { "type": "wifi",
-      "keyIcon": "\uf1eb",
-      "format": "{protocol} {band} · {signal-quality}% · {security}" },
-    { "type": "command",
-      "keyIcon": "\uf240",
-      "shell": "/bin/sh",
-      "text": "c=$(cat /sys/class/power_supply/bq27z561-0/capacity); s=$(cat /sys/class/power_supply/bq27z561-0/status); a=$(cat /sys/class/power_supply/tcpm-source-psy-c440000.spmi:pmic@2:typec@1500/online 2>/dev/null || echo 0); [ \"$a\" = 1 ] && ch=charging || ch=on-battery; printf '%s%% · %s · %s' \"$c\" \"$s\" \"$ch\"" },
-
-    { "type": "colors", "symbol": "block", "block": { "width": 2 } }
+    // ----------------系统基本信息----------------
+    {
+      "type": "title",
+      "key": "User",
+      "keyColor": "32",
+      "format": "{user-name}@{host-name}"
+    },
+    {
+      "type": "os",
+      "keyColor": "32"
+    },
+    {
+      "type": "kernel",
+      "keyColor": "32"
+    },
+    {
+      "condition": { // Conditional module: only show on non-macOS
+        "!system": "macOS"
+      },
+      "type": "disk",
+      "key": "OS Age",
+      "keyColor": "32",
+      "folders": "/",
+      "format": "{create-time:10} ({days} days)"
+    },
+    {
+      "condition": { // Conditional module: only show on macOS
+        "system": "macOS"
+      },
+      "type": "disk",
+      "key": "OS Age",
+      "keyColor": "32",
+      "folders": "/System/Volumes/VM", // Work around for APFS on macOS
+      "format": "{create-time:10} [{days} days]"
+    },
+    {
+      "type": "uptime",
+      "keyColor": "32"
+    },
+    "break",
+    // ----------------使用状态和负载----------------
+    {
+      "type": "disk",
+      "keyColor": "33"
+    },
+    {
+      "type": "memory",
+      "keyColor": "33"
+    },
+    {
+      "type": "swap",
+      "keyColor": "33"
+    },
+    {
+      "type": "command",
+      "key": "Load",
+      "keyColor": "33",
+      "keyIcon": "",
+      "text": "w | head -n 1 | awk -F': ' '{print $2}'"
+    },
+    "break",
+    // ----------------桌面环境----------------
+    {
+      "type": "shell",
+      "keyColor": "31"
+    },
+    {
+      "type": "terminal",
+      "keyColor": "31",
+      "format": "{pretty-name} {version} {#37}● {#36}● {#35}● {#34}● {#33}● {#32}● {#31}● {#30}●"
+    },
+    {
+      "type": "de",
+      "key": "Desktop",
+      "keyColor": "31"
+    },
+    {
+      "type": "font",
+      "key": "Font",
+      "keyColor": "31",
+      "format": "{0}"
+    },
+    {
+      "type": "terminalfont",
+      "key": "Term Font",
+      "keyColor": "31"
+    },
+    "break",
+    // ----------------运行环境----------------
+    {
+      "type": "command",
+      "key": "Go",
+      "keyIcon": "",
+      "keyColor": "34",
+      "text": "go version | cut -d' ' -f3",
+      "format": "go {~2}" // {~2} removes first 2 characters (go)
+    },
+    {
+      "type": "command",
+      "key": "Python",
+      "keyIcon": "",
+      "keyColor": "34",
+      "text": "python3 --version",
+      "format": "python {~7}"
+    },
+    {
+      "type": "command",
+      "key": "NodeJS",
+      "keyIcon": "",
+      "keyColor": "34",
+      "text": "node --version",
+      "format": "node {~1}" // {~1} removes first character (v)
+    },
+    {
+      "type": "command",
+      "key": "PNPM",
+      "keyIcon": "",
+      "keyColor": "34",
+      "text": "pnpm --version",
+      "format": "pnpm {}"
+    },
+    {
+      "type": "command",
+      "key": "Git",
+      "keyIcon": "󰊢",
+      "keyColor": "34",
+      "text": "git version",
+      "format": "git {~12}"
+    },
+    "break",
+    // ----------------网络信息----------------
+    {
+      "type": "localip",
+      "key": "LAN IP",
+      // "keyColor": "33",
+      "showIpv6": true,
+      "showPrefixLen": false
+    },
+    {
+      "type": "publicip",
+      "key": "WAN IP",
+      // "keyColor": "33",
+      "cache": true,
+      "timeout": 600 // ms
+    },
+    "break"
   ]
 }
