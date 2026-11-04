@@ -2,7 +2,7 @@
 # =============================================================================
 # build-release.sh — 本机构建 boot.img 并推送到 GitHub Release
 #
-#   一次跑完：内核 -> initramfs（含面板驱动）-> CSOT/BOE 两份 boot.img -> 自校验
+#   一次跑完：内核 -> GPU 固件 -> initramfs（面板驱动 + GPU 固件）-> CSOT/BOE 两份 boot.img -> 自校验
 #             -> output/<YYYYMMDD>/（仓库约定 + MANIFEST）-> gh release（标签 yy/mm/dd）
 #
 #   产物落位遵循 AGENTS.md 硬约束：构建产物只放 output/<YYYYMMDD>/ 并写 MANIFEST；
@@ -22,6 +22,7 @@
 #   --skip-kernel     跳过内核编译（要求 output/<日期>/kernel 已有 Image.gz + 两个 dtb）
 #   --repo OWNER/REPO 发布目标仓库（默认取 git remote origin）
 #   --build-dir DIR   中间树目录（默认仓库上一级 .build，不能放仓库内）
+#   FW_DIR=DIR        GPU 固件目录（默认 <build-dir>/firmware/elish-gpu；缺失时自动下载）
 #   -h, --help
 #
 # 依赖：clang lld llvm-* bc dtc flex bison pahole make python3 perl zstd cpio
@@ -39,14 +40,16 @@ JOBS=${JOBS:-}
 PUBLISH=1
 SKIP_KERNEL=0
 SLUG=${SLUG:-}
+FW_DIR=${FW_DIR:-}
 
 OUT=$REPO/output/$DATE
 KOUT=$OUT/kernel
 BOUT=$OUT/boot
 DIST=$BUILD/dist
 LOGS=$BUILD/logs
+FWDIR=${FW_DIR:-$BUILD/firmware/elish-gpu}
 
-usage() { sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 die()   { printf 'error: %s\n' "$*" >&2; exit 1; }
 log()   { printf '[build-release] %s\n' "$*"; }
 stage() { printf '\n[build-release] ===== %s =====\n' "$*"; }
@@ -162,7 +165,27 @@ KREL=$(basename "$(echo "$BUILD"/kbuild/modinstall/lib/modules/*)")
 MODARG=$(pick_modules "$BUILD/kbuild/modinstall/lib/modules/$KREL" "$BUILD/modstage" | tail -1)
 [ -d "$MODARG" ] || die "模块裁剪失败"
 
-# ------------------------------------------------------- 3) static busybox ----
+# --------------------------------------------------- 3) GPU 固件（initramfs） --
+# Adreno a650 固件必须由 initramfs 提供：CONFIG_DRM_MSM=y 在内核早期（rootfs 挂载
+# 之前，实测 ~1.4s）请求 qcom/a650_gmu.bin、qcom/a650_sqe.fw 与 DT 指定的
+# qcom/sm8250/xiaomi/elish/a650_zap.mbn。缺文件时 request_firmware 返回 -2，
+# GPU/DRM 起不来（bug.md B-058 / 2026-10-24 真机记录）。
+stage "准备 GPU 固件"
+firmware_complete() {
+    local f
+    for f in qcom/a650_gmu.bin qcom/a650_sqe.fw qcom/sm8250/xiaomi/elish/a650_zap.mbn; do
+        [ -s "$FWDIR/$f" ] || return 1
+    done
+}
+if ! firmware_complete; then
+    stage "下载 GPU 固件 -> $FWDIR"
+    FW_DIR=$FWDIR bash "$REPO/scripts/fetch-gpu-firmware.sh" \
+        || die "GPU 固件下载失败；手动放到 $FWDIR（见 docs/flash-guide.md）后重试"
+    firmware_complete || die "GPU 固件不完整: $FWDIR"
+fi
+log "GPU 固件: $FWDIR ($(find "$FWDIR" -type f | wc -l) files)"
+
+# ------------------------------------------------------- 4) static busybox ----
 BB=$BUILD/tools/busybox-static/root/usr/bin/busybox-static
 if [ -x "$BB" ]; then
     log "复用已有 busybox: $BB"
@@ -184,8 +207,9 @@ fi
 
 # ------------------------------------------------------------ 4) initramfs ----
 stage "打 initramfs"
-BUILD_ROOT=$BUILD bash "$REPO/scripts/build-initramfs.sh" \
-    --busybox "$BB" --modules "$MODARG" --out "$BOUT/initramfs.cpio.gz"
+BUILD_ROOT=$BUILD OUTPUT_DATE=$DATE bash "$REPO/scripts/build-initramfs.sh" \
+    --busybox "$BB" --modules "$MODARG" --firmware "$FWDIR" \
+    --out "$BOUT/initramfs.cpio.gz"
 
 # ------------------------------------------------ 5) 两份 boot.img + 自校验 --
 stage "打 boot.img（CSOT / BOE）"
@@ -220,17 +244,29 @@ cp "$KOUT/modules.tar.zst"   "$DIST/modules.tar.zst"
 cp "$LOGS"/*.verify.log      "$DIST/"
 ( cd "$DIST" && sha256sum boot.img boot-boe-alt.img initramfs.cpio.gz modules.tar.zst > SHA256SUMS.txt )
 
+# 产物必须能追溯到确切源码状态：构建时工作树有未提交改动就标记 +dirty，
+# 避免出现"说明写 commit A、实际用了未提交修复"的情况（2026-11-04 教训）。
+release_commit() {
+    local commit
+    commit=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)
+    if [ -n "$(git -C "$REPO" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+        commit="$commit+dirty"
+    fi
+    printf '%s' "$commit"
+}
 CFG_FILE=$(ls "$KOUT"/config-* | head -1)
 KERNEL_TAG=${CFG_FILE##*/config-}
 {
     printf '# elish boot images %s\n\n' "$TAG"
     printf -- '- 内核源码: %s（LLVM=1 交叉编译；pmaports config + configs/kernel/fragments）\n' "$KERNEL_TAG"
-    printf -- '- 构建提交: %s\n' "$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    printf -- '- 构建提交: %s\n' "$(release_commit)"
+    printf -- '- 内核补丁: configs/kernel/patches/*.patch（已全部打进内核模块）\n'
+    printf -- '- rootfs/mango: 本轮未构建（见 MANIFEST）\n'
     printf -- '- 构建时间: %s\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf '| 资产 | 用途 | 大小 (B) |\n|---|---|---|\n'
     printf '| boot.img | **CSOT** 面板（本机面板）：fastboot flash boot_b boot.img | %s |\n' "$(stat -c%s "$DIST/boot.img")"
     printf '| boot-boe-alt.img | **BOE** 面板，同上 | %s |\n' "$(stat -c%s "$DIST/boot-boe-alt.img")"
-    printf '| initramfs.cpio.gz | 已打进两个 img 的 initramfs（含面板驱动） | %s |\n' "$(stat -c%s "$DIST/initramfs.cpio.gz")"
+    printf '| initramfs.cpio.gz | 已打进两个 img 的 initramfs（含面板驱动 + GPU 固件） | %s |\n' "$(stat -c%s "$DIST/initramfs.cpio.gz")"
     printf '| modules.tar.zst | 内核模块，解到 linux 分区的 /lib/modules | %s |\n' "$(stat -c%s "$DIST/modules.tar.zst")"
     printf '%s\n' '' '## 刷写（只碰 boot_b 与 linux 两个分区）' '' '```sh'
     printf '%s\n' 'sha256sum -c SHA256SUMS.txt         # 先验校验和'
@@ -245,6 +281,8 @@ KERNEL_TAG=${CFG_FILE##*/config-}
     cat "$DIST/SHA256SUMS.txt"
     printf '%s\n' '```'
 } > "$DIST/RELEASE-NOTES.md"
+# Release 说明同时留在 output/<date>/，避免只存在于可清理的中间树（G-11）
+cp "$DIST/RELEASE-NOTES.md" "$OUT/RELEASE-NOTES.md"
 
 # ------------------------------------------------------------------ 7) 发布 --
 if [ "$PUBLISH" -eq 0 ]; then

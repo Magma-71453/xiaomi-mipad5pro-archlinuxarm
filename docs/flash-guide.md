@@ -230,32 +230,45 @@ fastboot --set-active=b
 fastboot reboot
 ```
 
-### d.6 重打 initramfs（`--modules` 路径约定）
+### d.6 重打 initramfs（`--modules` + `--firmware`）
 
-内核模块产物在 `<kernel-build>/lib/modules/<ver>/`，且因 `MODULE_COMPRESS_ALL=y` +
-`MODULE_COMPRESS_ZSTD=y` 落地为 `*.ko.zst`。**只需要一个模块**：
-面板驱动 `CONFIG_DRM_PANEL_NOVATEK_NT36523=m`（`drivers/gpu/drm/panel/panel-novatek-nt36523.c`，
-两个 dtb 的 compatible 为 `xiaomi,elish-csot-nt36523` / `xiaomi,elish-boe-nt36523`）。
-`DRM_MSM`、`F2FS_FS`、`EXT4_FS` 都是 `=y`，**不要**放 `f2fs.ko`/`ext4.ko`/`msm.ko`。
+内核模块产物在 `output/<date>/kernel/modules.tar.zst` 内，路径为
+`lib/modules/<krel>/`（本机内核 release 是 `7.2.0`，不要写成 `7.2.0_git20261010`），
+且因 `MODULE_COMPRESS_ALL=y` + `MODULE_COMPRESS_ZSTD=y` 落地为 `*.ko.zst`。
 
-约定输入目录（`lib/modules/<ver>` 的**子集**，层级与内核产物一致）：
+initramfs 需要两类输入，缺一不可：
+
+1. **面板驱动**：`CONFIG_DRM_PANEL_*=m` 的模块（`panel-novatek-nt36523` 等）及其依赖闭包。
+   `DRM_MSM`、`F2FS_FS`、`EXT4_FS` 都是 `=y`，**不要**放 `f2fs.ko`/`ext4.ko`/`msm.ko`。
+2. **GPU 固件**（`--firmware`）：`qcom/a650_gmu.bin`、`qcom/a650_sqe.fw`、
+   `qcom/sm8250/xiaomi/elish/a650_zap.mbn`。`CONFIG_DRM_MSM=y` 在 rootfs 挂载前（实测 ~1.4 s）
+   就会 `request_firmware`，initramfs 里没有会返回 `-2`，GPU/DRM 起不来（B-058）。
+
+约定输入目录（层级与内核产物一致）：
 
 ```
-.build/initramfs-mods/lib/modules/7.2.0_git20261010/
-└── kernel/drivers/gpu/drm/panel/panel-novatek-nt36523.ko.zst
+.build/initramfs-mods/lib/modules/7.2.0/
+└── kernel/drivers/gpu/drm/panel/*.ko.zst
     modules.dep              # 可选；脚本会把 .ko.zst 改写成 .ko
 ```
 
 ```bash
-scripts/build-initramfs.sh \
-  --modules .build/initramfs-mods/lib/modules/7.2.0_git20261010 \
-  --out output/20261024/boot/initramfs.cpio.gz
+# 1) GPU 固件（自动下载 + sha256 校验；也可以手动放进该目录）
+scripts/fetch-gpu-firmware.sh --out .build/firmware/elish-gpu
+# 2) 面板模块子集（build-release.sh 会按 modules.dep 自动做依赖闭包）
+tar --zstd -xf output/<date>/kernel/modules.tar.zst -C .build/initramfs-mods
+# 3) 打包
+BUILD_ROOT=$PWD/../.build scripts/build-initramfs.sh \
+  --modules .build/initramfs-mods/lib/modules/7.2.0 \
+  --firmware .build/firmware/elish-gpu \
+  --out output/<date>/boot/initramfs.cpio.gz
 ```
 
-- `--modules` 同时接受 `.ko` 与 `.ko.zst`（目录或单文件）。
+- `--modules` 同时接受 `.ko` 与 `.ko.zst`（目录或单文件）；`--firmware` 接受固件树根目录。
 - **必须**解压 `.ko.zst` → `.ko`：busybox `insmod` 不能解 zstd；`modules.dep` 里的 `.ko.zst` 同步改写。
-- 镜像内 `/initramfs.modules` 记录实际打进去的模块；没有模块时内容为 `no extra modules`。
+- 镜像内 `/initramfs.modules` 记录实际打进去的模块；`/lib/firmware/qcom/...` 是 GPU 固件。
 - `/init` 里 insmod 失败**不致命**（警告后继续挂载根分区）；模块已内置时正是这种情形。
+- 最省事的方式：直接跑 `scripts/build-release.sh`（本脚本已把以上三步串起来并自带自校验）。
 
 ---
 
@@ -278,13 +291,13 @@ scripts/build-initramfs.sh \
 
 1. **分区设备名**：`ls -l /dev/disk/by-partlabel/` 中 `boot_b`/`linux` 指向的节点（核对 `sde37`/`sda36` 是否仍成立）。
 2. **fastboot 容量**：`fastboot getvar partition-size:boot_b`、`:linux` 的原始输出。
-3. **镜像体积**：`ls -l output/20261024/boot/boot.img` 与 192 MiB 的占比。
+3. **镜像体积**：`ls -l output/<date>/boot/boot.img` 与 192 MiB 的占比。
 4. **fsck**：`fsck.f2fs -f /dev/disk/by-partlabel/linux` 完整输出与退出码；开机后 `dmesg | grep -i f2fs`。
 5. **挂载与扩容**：`findmnt /`、`df -h /`（扩容前后各一次）、`resize.f2fs` 的输出。
 6. **开机关键日志**：`elish-init: found root device ...`、`elish-init: root mounted read-only as f2fs`、
    `elish-init: switch_root ... /sbin/init`、`dmesg | grep -iE 'F2FS|panel|nt36523'`；
    失败时贴 `elish-init: mount -t f2fs failed` 与 `elish-init: FATAL:` 的原文。
-7. **FLASH-LOG**：`output/20261024/FLASH-LOG` 全文（含是否动用 D-009）。
+7. **FLASH-LOG**：`output/<date>/FLASH-LOG` 全文（含是否动用 D-009）。
 8. **不符预期项**：按"期望 / 实际 / 复现步骤"三行写。
 
 ---
@@ -294,8 +307,11 @@ scripts/build-initramfs.sh \
 本项目 `boot.img` 的 cmdline（`scripts/make-bootimg.py` 默认值）：
 
 ```
-quiet rootwait root=PARTLABEL=linux console=tty0 loglevel=4
+quiet rootwait root=PARTLABEL=linux console=tty0 loglevel=4 systemd.gpt_auto=no
 ```
+
+`systemd.gpt_auto=no` 是 B-029 的预防项：Android 的 ESP 分区会被 systemd-gpt-auto-generator
+生成 `boot.automount`，该 automount 挂载失败会拖垮 dbus-broker 的 mount namespace。
 
 - 旧系统参考：`root=UUID=... rootwait rw slot_suffix=_b console=tty0 loglevel=4`（ABL 还会追加 `androidboot.*`）。
 - 用 `root=PARTLABEL=linux` 而不是 `UUID=`：分区即便重新创建/重新格式化（UUID 会变）也仍然有效，
@@ -305,5 +321,6 @@ quiet rootwait root=PARTLABEL=linux console=tty0 loglevel=4
 - **已实测（本机）**：`mkfs.f2fs` 1.17.0 的 `-h` 选项表；上述命令可格式化 64 MiB 镜像（`Info: format successful`）；
   `fsck.f2fs -f` 返回 0；`-O compression` / `-O ^compression` 的真实报错。
 - **已实测（设备，D-013）**：`boot_b` = `sde37` / 192 MiB；`linux` = `sda36` / ≈195.5 GiB；CSOT 面板。
-- **未实测（待真机）**：真实内核与 DTB 的打包、`fastboot` 实际刷写、开机到 `/sbin/init`、`resize.f2fs`。
+- **已实测（真机，2026-10-24）**：真实内核与 DTB 打包、`fastboot` 刷写、开机到 `/sbin/init`、`resize.f2fs`。
+- **2026-11-04 复核**：镜像结构、initramfs 内容、模块/config 差异已核对；新 boot.img 尚未刷机复验（见 bug.md B-057/B-058）。
 - `linux` 分区的创建（缩减 `userdata`）**永远不由本项目脚本执行**。
