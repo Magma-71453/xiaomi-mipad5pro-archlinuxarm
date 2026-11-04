@@ -58,15 +58,11 @@ bug.md             缺陷与已知问题（唯一真源）
 ```sh
 scripts/build-kernel.sh       # 交叉编译 sm8250-7.2.0_git20261010（LLVM=1，out-of-tree）
 scripts/build-initramfs.sh    # 静态 busybox initramfs
-scripts/pick-initramfs-modules.sh  # 从 modinstall 的 modules.dep 裁出 initramfs 要带的面板驱动子集
 scripts/build-rootfs.sh       # Arch Linux ARM aarch64 rootfs -> tar.zst + f2fs 镜像（4096 B 扇区）
 scripts/make-bootimg.py       # Image.gz + dtb + initramfs -> boot.img
 scripts/collect-manifest.sh   # 生成 MANIFEST / SHA256SUMS
 scripts/flash-elish.sh --dry-run   # 默认演练，确认后才会真的写分区
 ```
-
-远端也能出图（GitHub Actions，手动触发）：`.github/workflows/build-bootimg.yml` 以 `yy/mm/dd` 为标签，
-一次产出 `boot-csot.img` / `boot-boe.img` 两份可直刷镜像并发到 Release，见 `docs/ci-release.md`。
 
 内核迭代不必重刷根文件系统：把新模块拷进 `/lib/modules/$(uname -r)/...`、`depmod -a`、`modprobe -r/-i` 即可；
 只有 `Image` / dtb 变化才需要重刷 `boot_b`。

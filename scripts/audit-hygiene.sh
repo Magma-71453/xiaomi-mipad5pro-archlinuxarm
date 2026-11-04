@@ -29,8 +29,7 @@ ARTIFACT_GLOBS='*.img *.img.gz *.img.xz *.img.zst *.ko *.o *.dtb *.dtbo *.apk *.
 ARTIFACT_DIRS='abuild chroot pmbootstrap-work .src .output pkg .build __pycache__'
 # Paths git status may legitimately show: the repo layout declared in README.md.
 # Anything outside it (stray binaries, build dirs, scratch files at the root) fails.
-# .github/ holds CI workflows only (.yml, never binaries) — see docs/ci-release.md.
-ALLOWED_STATUS_PREFIXES=${HYGIENE_ALLOWED_STATUS:-.github/ scripts/ tests/ configs/ patches/ perf/ docs/ output/ bug.md README.md .gitignore}
+ALLOWED_STATUS_PREFIXES=${HYGIENE_ALLOWED_STATUS:-scripts/ tests/ configs/ patches/ perf/ docs/ output/ bug.md README.md .gitignore}
 FLASH_LOG_PATTERN='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z  fastboot [a-z-]+ .* -> ok$'
 ERASE_ALLOWED_PATTERN='fastboot erase dtbo_b -> ok'
 
