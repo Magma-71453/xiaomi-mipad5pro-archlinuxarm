@@ -62,7 +62,11 @@ scripts/build-rootfs.sh       # Arch Linux ARM aarch64 rootfs -> tar.zst + f2fs 
 scripts/make-bootimg.py       # Image.gz + dtb + initramfs -> boot.img
 scripts/collect-manifest.sh   # 生成 MANIFEST / SHA256SUMS
 scripts/flash-elish.sh --dry-run   # 默认演练，确认后才会真的写分区
+scripts/build-release.sh      # 一键：内核 -> initramfs -> 两份 boot.img -> gh release
 ```
+
+一键出图并发 Release：`scripts/build-release.sh`（本机编内核，产出 CSOT 的 `boot.img` 与 BOE 的
+`boot-boe-alt.img`，标签/标题 `yy/mm/dd`；`--no-publish` 只构建、`--skip-kernel` 复用上一轮内核）。
 
 内核迭代不必重刷根文件系统：把新模块拷进 `/lib/modules/$(uname -r)/...`、`depmod -a`、`modprobe -r/-i` 即可；
 只有 `Image` / dtb 变化才需要重刷 `boot_b`。
