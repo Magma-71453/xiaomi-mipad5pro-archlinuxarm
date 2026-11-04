@@ -29,6 +29,8 @@ KERNEL_SHA512="${KERNEL_SHA512:-05df1589411d2817fecc403402f1dea2c405c5de102bf92e
 CFG_IN="${CFG_IN:-$REPO_DIR/configs/kernel/config-postmarketos-qcom-sm8250.aarch64}"
 # 相对上游 pmaports config 的本地修正，按文件名顺序合并（见 configs/kernel/fragments/）
 FRAG_DIR="${FRAG_DIR:-$REPO_DIR/configs/kernel/fragments}"
+# 需要打到上游源码上的本地补丁，按文件名顺序以 -p1 打（见 configs/kernel/patches/）
+PATCH_DIR="${PATCH_DIR:-$REPO_DIR/configs/kernel/patches}"
 
 DL_DIR="${DL_DIR:-$ROOT_DIR/.build/dl}"
 BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/.build/kbuild}"
@@ -54,7 +56,7 @@ usage() { cat <<'EOF'
   --rebuild  删除目标树 $OBJ_DIR / $MODROOT 与 build.log 后完整重编（源码保留）
   --fetch    强制重新下载源码归档
 环境变量覆盖: ROOT_DIR REPO_DIR DL_DIR BUILD_DIR SRC_DIR OBJ_DIR MODROOT TOOLS_DIR
-             OUT_DIR MANIFEST JOBS ARCH KERNEL_TAG SRC_URL KERNEL_SHA512 CFG_IN FRAG_DIR
+             OUT_DIR MANIFEST JOBS ARCH KERNEL_TAG SRC_URL KERNEL_SHA512 CFG_IN FRAG_DIR PATCH_DIR
 EOF
 }
 
@@ -131,6 +133,30 @@ extract_source() {
   fi
   local v; v="$(grep -m1 '^VERSION' "$SRC_DIR/Makefile")"
   log "Makefile $v"
+}
+
+# ------------------------------------------------------------------- 补丁 ----
+# 把 $PATCH_DIR/*.patch 按文件名顺序 -p1 打到源码树（cwd = SRC_DIR）。
+# 幂等：源码树是缓存的（extract_source 只在缺失时解压），所以先做一次"反向 dry-run"
+# 判断补丁是否已打过——打过就跳过，否则第二次运行会撞 "previously applied"。
+apply_patches() {
+  stage patches
+  [ -d "$PATCH_DIR" ] || { log "no patch dir: $PATCH_DIR"; return 0; }
+  local files=() p applied=0 skipped=0
+  shopt -s nullglob; files=("$PATCH_DIR"/*.patch); shopt -u nullglob
+  [ "${#files[@]}" -gt 0 ] || { log "no patches in $PATCH_DIR"; return 0; }
+  for p in "${files[@]}"; do
+    if patch -p1 -d "$SRC_DIR" --forward --dry-run --reverse --silent <"$p" >/dev/null 2>&1; then
+      log "already applied: $(basename "$p")"
+      skipped=$((skipped + 1))
+      continue
+    fi
+    log "apply: $(basename "$p")"
+    patch -p1 -d "$SRC_DIR" --forward --batch --silent <"$p" \
+      || die "patch failed: $p（被拒的 hunk 见 $SRC_DIR 下的 *.rej）"
+    applied=$((applied + 1))
+  done
+  log "patches: applied=$applied already-present=$skipped"
 }
 
 # ------------------------------------------------------------------- 配置 ----
@@ -282,6 +308,7 @@ main() {
   prepare_tools
   fetch_source
   extract_source
+  apply_patches
   configure
   build_kernel
   install_modules
