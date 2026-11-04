@@ -1,3 +1,4 @@
-# Allow every member of wheel to run anything (password required once a TTY
-# session has authenticated; no NOPASSWD on purpose).
-%wheel ALL=(ALL:ALL) ALL
+# Allow every member of wheel to run anything without a password prompt.
+# 设备实机与 AGENTS.md/所有自动化流程都依赖 sudo -n；仓库若改成需要密码，
+# 重建 rootfs 后 ssh 自动化（安装、验证、日志）会全部失效。
+%wheel ALL=(ALL:ALL) NOPASSWD: ALL
