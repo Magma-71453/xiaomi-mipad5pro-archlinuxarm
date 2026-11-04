@@ -55,7 +55,7 @@ sudo pacman -S --needed android-tools zstd
 ```sh
 fastboot devices          # 必须列出设备，例如 <device-serial>  fastboot
 fastboot getvar current-slot   # 期望输出 a（本项目只写 _b 槽位）
-fastboot getvar partition-size:boot_b   # 期望 0x6000000（192 MiB）
+fastboot getvar partition-size:boot_b   # 期望 0xC000000（192 MiB）
 ```
 
 ---
@@ -243,8 +243,9 @@ sudo pacman -Syu
 # 一次性：拉取 GPU 固件（initramfs 早期加载必需，脚本会校验 sha256）
 scripts/fetch-gpu-firmware.sh --out ../.build/firmware/elish-gpu
 
-# 内核 + initramfs + boot.img + MANIFEST（不含 rootfs）
-scripts/build-release.sh --skip-rootfs --no-publish   # 若脚本无该参数则直接：scripts/build-release.sh --no-publish
+# 内核 + initramfs + boot.img + MANIFEST
+# （rootfs/mango 已存在于 output/<date>/ 时会自动一起打包进 Release）
+scripts/build-release.sh --no-publish
 
 # rootfs（需要先准备 --firmware / --mango / --overlay）：
 BUILD_ROOT=../.build OUT_DIR=output/<date>/rootfs scripts/build-rootfs.sh \

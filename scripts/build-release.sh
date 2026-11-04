@@ -302,7 +302,7 @@ release_commit() {
 CFG_FILE=$(ls "$KOUT"/config-* | head -1)
 KERNEL_TAG=${CFG_FILE##*/config-}
 {
-    printf '# elish boot images %s\n\n' "$TAG"
+    printf '# elish images %s（boot + rootfs + 安装教程）\n\n' "$TAG"
     printf -- '- 内核源码: %s（LLVM=1 交叉编译；pmaports config + configs/kernel/fragments）\n' "$KERNEL_TAG"
     printf -- '- 构建提交: %s\n' "$(release_commit)"
     printf -- '- 内核补丁: configs/kernel/patches/*.patch（已全部打进内核模块）\n'
@@ -328,16 +328,18 @@ KERNEL_TAG=${CFG_FILE##*/config-}
     if [ -f "$DIST/INSTALL.md" ]; then
         printf '| INSTALL.md | 完整安装教程（从进入 fastboot 到首启验证/更新/救援） | %s |\n' "$(stat -c%s "$DIST/INSTALL.md")"
     fi
-    printf '%s\n' '' '完整安装步骤（含 rootfs 首刷与首启配置）见 INSTALL.md。'
-    printf '%s\n' '' '## 刷写（只碰 boot_b 与 linux 两个分区）' '' '```sh'
-    printf '%s\n' 'sha256sum -c SHA256SUMS.txt         # 先验校验和'
-    printf '%s\n' 'fastboot getvar current-slot        # 期望 a（本项目只写 _b 槽位）'
-    printf '%s\n' 'fastboot flash boot_b boot.img      # BOE 面板换成 boot-boe-alt.img'
+    printf '%s\n' '' '## 快速安装（完整步骤见 INSTALL.md；只碰 boot_b 与 linux 两个分区）' '' '```sh'
+    printf '%s\n' 'sha256sum -c SHA256SUMS.txt                   # 先验校验和'
+    printf '%s\n' 'fastboot getvar current-slot                  # 期望 a（本项目只写 _b 槽位）'
+    printf '%s\n' 'zstd -d linux-rootfs-f2fs.img.zst              # 解压根分区镜像'
+    printf '%s\n' 'fastboot flash linux linux-rootfs-f2fs.img    # 会清空 linux 分区！'
+    printf '%s\n' 'fastboot flash boot_b boot.img                # BOE 面板换成 boot-boe-alt.img'
     printf '%s\n' 'fastboot reboot' '```'
+    printf '%s\n' '' '首次开机：自动登录 magma（默认密码 <redacted>，立即 passwd 修改）；initramfs 会自动把根分区扩容到 195 GiB。'
     printf '%s\n' '' '刷错面板 = 黑屏，刷之前确认面板型号（本机是 CSOT）。'
     printf '%s\n' '不要 fastboot erase 任何分区；不要写 boot_a / dtbo_b / system_b / super 等其它分区。'
     printf '%s\n' '刷前自检：python3 scripts/make-bootimg.py --verify --input boot.img，期望 verify.status = OK。'
-    printf '%s\n' '' '详见仓库 docs/flash-guide.md。'
+    printf '%s\n' '' '完整安装/救援步骤见 INSTALL.md（Release 资产同名文件）与仓库 docs/flash-guide.md。'
     printf '%s\n' '' '## 校验和' '' '```'
     cat "$DIST/SHA256SUMS.txt"
     printf '%s\n' '```'
