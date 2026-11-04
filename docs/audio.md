@@ -34,7 +34,7 @@ for_each_rtd_codec_dais(rtd, j, codec_dai) {
 
 - 只重编 `snd-soc-sm8250.ko`（`make -C <src> ARCH=arm64 LLVM=1 M=sound/soc/qcom modules`），
   zstd 压缩后替换 `/lib/modules/7.2.0/kernel/sound/soc/qcom/snd-soc-sm8250.ko.zst`，`depmod -a` + `modprobe -r/-i`。
-- 原模块备份在设备 `/root/snd-soc-sm8250.ko.zst.orig`。
+- 替换前先把原模块复制到设备上的自定义备份路径（任意用户可写位置即可），出问题再拷回。
 - 变体：slot 0/4 与 slot 0/1 都试过 —— **两者都没有声音**，说明“无声”不是 slot 映射造成的，
   而是更上游（功放使能/供电/TDM 下行）的问题；slot 映射只决定“有声之后是单声道还是立体声”。
 
@@ -45,13 +45,13 @@ for_each_rtd_codec_dais(rtd, j, codec_dai) {
 
 ## 下一步（待办）
 
-1. 用 `/sys/kernel/debug/asoc/Xiaomi Mi Pad 5 Pro/dapm/` 观察播放时功放 widget 是否 powered（本次 glob 路径写错，未取到）。
+1. 用 `/sys/kernel/debug/asoc/Xiaomi Mi Pad 5 Pro/dapm/` 观察播放时功放 widget 是否 powered（该路径受 DAPM 注册时机影响，首次尝试可能 glob 不到）。
 2. 检查功放供电：dmesg 里 `supply VA/VP not found, using dummy regulator` —— DT 没有定义 VA/VP 稳压器，
    若 pmOS 真机有声，说明其 DT 或 UCM 另有使能路径（需对比其 kernel patch 集）。
 3. 检查 q6 AFE 的 TDM 端口是否真的在跑：`cat /proc/asound/card0/pcm0p/sub0/status` + ADSP `apr` 日志。
 4. 确认 `speaker-test` 走的是 UCM 使能后的路径（`alsaucm ... set _enadev Speaker` 之后再播放）。
 
-## 寄存器级证据（播放中实测，2026-10-25 11:30）
+## 寄存器级证据（播放中实测，2026-10-25）
 
 | 位置 | 值 | 含义 |
 |---|---|---|
@@ -69,7 +69,7 @@ for_each_rtd_codec_dais(rtd, j, codec_dai) {
 1. **ADSP 侧 TDM 端口是否真的在发波形**（q6afe TERTIARY_TDM_RX_0）。APPS 侧看不到它的时钟，需要看 ADSP 日志或 `apr` 调试。
 2. **功放的 speaker protection 固件用的是通用版**：dmesg 里 8 颗功放全部 `Subsystem ID not found`，
    因此加载的是 `cs35l41-dsp1-spk-prot.wmfw`（通用），而不是设备专属的 `cs35l41-dsp1-spk-prot-10251826-*.bin`。
-   厂商 DT 每颗功放还带 `cirrus,fast-switch = "TRH-music.txt" ...` 与 `cirrus,tuning-has-prefix`，我们的（pmOS 上游）DT 没有。
+   厂商 DT 每颗功放还带 `cirrus,fast-switch = "TRH-music.txt" ...` 与 `cirrus,tuning-has-prefix`，本仓库的（pmOS 上游）DT 没有。
    保护 DSP 未按设备调音时，输出被静音是已知行为。
 
 ### 建议的下一步（按性价比排序）
@@ -77,17 +77,17 @@ for_each_rtd_codec_dais(rtd, j, codec_dai) {
 2. 用 `apr`/ADSP 侧调试确认 TDM 端口在跑（`cat /sys/kernel/debug/remoteproc/*/trace0` 或 `q6afe` 调试）。
 3. 若确认 ADSP 没发 TDM，则问题在 `sm8250.c` 的 AFE 端口配置（`snd_soc_dai_set_sysclk`/TDM_BCLK_RATE 与 vendor 的实现不同）。
 
-## 与 postmarketOS 的逐项对比结论（2026-10-25 11:35）
+## 与 postmarketOS 的逐项对比结论（2026-10-25）
 
 | 对比项 | 结果 |
 |---|---|
-| `sound/soc/qcom/sm8250.c` | 与 pmOS `7.2.0-dev` **只有我加的补丁这一处差异**（pmOS 上游同样没有 per-codec TDM slot → 印证“单声道”是上游行为） |
-| 内核配置（`CONFIG_SND*` / `CONFIG_QCOM*`） | 与我们逐项比对：**0 处差异**（用 pmOS `config-postmarketos-qcom-sm8250.aarch64` 全量对比） |
+| `sound/soc/qcom/sm8250.c` | 与 pmOS `7.2.0-dev` **只有本仓库所加补丁这一处差异**（pmOS 上游同样没有 per-codec TDM slot → 印证“单声道”是上游行为） |
+| 内核配置（`CONFIG_SND*` / `CONFIG_QCOM*`） | 与本仓库逐项比对：**0 处差异**（用 pmOS `config-postmarketos-qcom-sm8250.aarch64` 全量对比） |
 | UCM `HiFi.conf` / `elish.conf` | 与 pmOS `device-xiaomi-elish/alsa-ucm-conf/` **逐字节相同** |
-| 固件 | pmOS `firmware-xiaomi-elish` 装的是 `adsp*/cdsp*/slpi*/venus/a650_*/novatek/nt36523/cirrus/cs35l41*`，并**主动删除** `acdb/`；我们已具备同类文件 |
+| 固件 | pmOS `firmware-xiaomi-elish` 装的是 `adsp*/cdsp*/slpi*/venus/a650_*/novatek/nt36523/cirrus/cs35l41*`，并**主动删除** `acdb/`；本仓库已具备同类文件 |
 | DT | 同一内核树同一份 `sm8250-xiaomi-elish-common.dtsi` |
 
-**因此在“静态可对比”的层面上我们已经和 pmOS 完全一致，但本机仍然无声。**
+**因此在“静态可对比”的层面上已与 pmOS 完全一致，但该测试设备仍然无声。**
 剩下的差异只能在运行时才能看出来（例如 ADSP 侧 AFE 端口是否接受 TDM 配置、ACDB/调音是否真的加载成功、
 或 pmOS 真机其实也无声 —— wiki 上“speakers do not operate in stereo”这句可能已经过时）。
 
@@ -95,10 +95,11 @@ for_each_rtd_codec_dais(rtd, j, codec_dai) {
 1. **对照真机 pmOS**：用 pmOS 的 boot 镜像启动同一台机器（不写 rootfs），确认它到底有没有声音；有声音再抓它的 dmesg/mixer 差异。
 2. **ADSP 侧调试**：在 `sm8250.c` 的 TDM 分支加 `dev_info` 打印 AFE 端口打开/时钟设置返回值，并把 ADSP 的 `apr` 交互日志拉出来。
 
-## ✅ 修复（2026-10-25 11:45）：出声了，并且切到直通后变响变清
+## ✅ 修复（2026-10-25）：出声了，并且切到直通后变响变清
 
 ### 关键发现
-1. 之前的“完全无声”有一半是我把 PipeWire 搞挂了（我手动 kill + 重载模块，`/proc/asound/cards` 变成 `--- no soundcards ---`），
+1. 之前的“完全无声”有一半来自调试过程中把 PipeWire 状态搞挂（手动 kill 播放进程 + 重载内核模块后
+   `/proc/asound/cards` 变成 `--- no soundcards ---`），
    导致所有播放根本没到硬件。重载模块 + `systemctl --user restart wireplumber` 后，
    **调试日志证明 TDM 通路真正跑起来了**：
    ```
@@ -106,14 +107,14 @@ for_each_rtd_codec_dais(rtd, j, codec_dai) {
    Tertiary TDM Playback: elish-tdm: hw_params ch=2 slots=8 width=32 set_tdm_slot=0
    ```
 2. 出声后是**很小很闷**：原因是 UCM 默认让功放走内部保护 DSP（`PCM Source = DSP`），
-   而我们只有通用保护固件（`Subsystem ID not found`）。把 `PCM Source` 切成 **ASP 直通**后，
-   音量与清晰度都明显改善（实测对比，用户确认）。
+   而本仓库只有通用保护固件（`Subsystem ID not found`）。把 `PCM Source` 切成 **ASP 直通**后，
+   音量与清晰度都明显改善（实测对比）。
 
 ### 落地改动
 | 改动 | 位置 |
 |---|---|
-| 机器驱动给 8 颗 CS35L41 分配 TDM RX slot（左 slot0、右 slot1，按 DT 顺序每两颗一组） | `configs/kernel/patches/0001-sm8250-per-codec-tdm-slots.patch`；设备上已编成 `snd-soc-sm8250.ko` 替换（备份 `/root/snd-soc-sm8250.ko.zst.orig`） |
-| UCM 默认走 ASP 直通 | `configs/rootfs/usr/share/alsa/ucm2/Xiaomi/elish/HiFi.conf`（设备上已覆盖 `/usr/share/alsa/ucm2/Xiaomi/elish/HiFi.conf`，原文件备份为 `.orig-dsp`） |
+| 机器驱动给 8 颗 CS35L41 分配 TDM RX slot（左 slot0、右 slot1，按 DT 顺序每两颗一组） | `configs/kernel/patches/0001-sm8250-per-codec-tdm-slots.patch`；设备上已编成 `snd-soc-sm8250.ko` 替换（替换前先备份原模块） |
+| UCM 默认走 ASP 直通 | `configs/rootfs/usr/share/alsa/ucm2/Xiaomi/elish/HiFi.conf`（设备上已覆盖 `/usr/share/alsa/ucm2/Xiaomi/elish/HiFi.conf`，原文件另存备份后再覆盖） |
 
 ### 日常音量（实测合适）
 - `<AMP> Digital PCM Volume`: **780 ~ 900** / 913（默认 817 已经很响）

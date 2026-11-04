@@ -28,11 +28,12 @@ meson.build 里**没有** `meson_version:` 声明，所以 meson 版本不构成
 
 ## 2. 依赖来源：ALARM 包 + sysroot，不碰 pacman
 
-设备（ArchLinuxARM aarch64，936 个包已装）**没有** wlroots/scenefx，
+设备（ArchLinuxARM aarch64）**没有** wlroots/scenefx，
 且决策 D-015 只允许在 `~/elish-build` 内活动、禁止 pacman 安装、禁止写 /usr。
 
 做法：解析 ALARM 包数据库 `mirror.archlinuxarm.org/aarch64/{core,extra}.db.tar.gz`，
-以 wlroots0.20+scenefx 为根做**依赖闭包**（114 个包），再减去设备 `pacman -Qq` 已装的 108 个，
+以 wlroots0.20+scenefx 为根做**依赖闭包**（114 个包），再减去设备 `pacman -Qq` 已装的那部分
+（已装数随系统演进会变，构建脚本以当次 `pacman -Qq` 实际输出为准），
 得到**真正需要补的只有 5 个包**（另有 libgcc/libstdc++ 由设备的 gcc-libs 提供，不重复引入）：
 
 | 包 | 版本 | sha256（本次下载物，已在脚本内固定） |
@@ -151,4 +152,4 @@ meson install -C build/mango
 - 二进制**未 strip**（3.35 MB，带 debug_info）：上游 meson.build 无条件加 `-g`。
   若要体积优化，装配时可 `strip --strip-unneeded`（会改 sha256，MANIFEST 需重算）。
 - 只验证了 wlroots **0.20 线**；0.19/0.18 线（不同 tag）未构建。
-- `~/elish-build`（37 MiB）仍留在设备上，随时可 `rm -rf` 清理；本任务未删除以便复查。
+- `~/elish-build`（37 MiB）仍留在设备上，随时可 `rm -rf` 清理；保留下来是为了复查。

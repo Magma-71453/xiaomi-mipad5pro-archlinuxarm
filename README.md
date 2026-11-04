@@ -22,7 +22,7 @@ amplifiers, bq2597x charge-pump fast charging and an x86 layer via FEX-Emu.
 | 子系统 | 状态 | 关键点 |
 |---|---|---|
 | 引导链 | ✅ | ABL → `boot.img`（`Image.gz` + 零填充 dtb + initramfs）→ f2fs 根分区（`PARTLABEL=linux`） |
-| 显示 | ✅ | CSOT 面板 1600×2560@120 Hz、单 mode、`Transform 270`，缩放交给合成器 |
+| 显示 | ✅ | CSOT 面板实测 1600×2560@120 Hz、单 mode、`Transform 270`，缩放交给合成器（BOE 变体用 `boot-boe-alt.img`，本机为 CSOT） |
 | 触摸 | ✅ | `novatek,NVT-ts-spi`（音量键位 → `mango-volume` → OSD；原 evdev 音量守护已因 CPU 占用移除） |
 | 桌面 | ✅ | MangoWM + **waybar** 状态栏 + 自制外壳（dock / OSD / 手势 / 屏幕键盘），见 `docs/mango.md` |
 | Wi-Fi | ✅ | ath11k WCN6855；含「MAC 全 0 导致接口起不来」的修复（`wlp-mac.service`） |
@@ -56,7 +56,7 @@ bug.md             缺陷与已知问题（唯一真源）
 中间产物落在被忽略的 `.build/`，镜像落在 `output/<YYYYMMDD>/`（同样被忽略）。
 
 ```sh
-scripts/build-kernel.sh       # 交叉编译 sm8250-7.2.0_git20261010（LLVM=1，out-of-tree）
+scripts/build-kernel.sh       # 交叉编译 sm8250-7.2.0_git20261010（LLVM=1，out-of-tree；版本以脚本里的 KERNEL_TAG 为准）
 scripts/build-initramfs.sh    # 静态 busybox initramfs
 scripts/build-rootfs.sh       # Arch Linux ARM aarch64 rootfs -> tar.zst + f2fs 镜像（4096 B 扇区）
 scripts/make-bootimg.py       # Image.gz + dtb + initramfs -> boot.img
@@ -66,7 +66,7 @@ scripts/fetch-gpu-firmware.sh # 下载 initramfs 早期加载所需的 Adreno 65
 scripts/build-release.sh      # 一键：内核 -> GPU 固件 -> initramfs -> 两份 boot.img -> gh release
 ```
 
-一键出图并发 Release：`scripts/build-release.sh`（本机编内核，产出 CSOT 的 `boot.img` 与 BOE 的
+一键出图并发 Release：`scripts/build-release.sh`（在本地主机交叉编译内核，产出 CSOT 的 `boot.img` 与 BOE 的
 `boot-boe-alt.img`，标签/标题 `yy/mm/dd`；`--no-publish` 只构建、`--skip-kernel` 复用上一轮内核）。
 如果 `output/<date>/rootfs` 与 `output/<date>/mango` 已经构建好，脚本会把 rootfs 镜像（zstd 压缩）、
 rootfs 归档、mango 运行时和 `INSTALL.md` 一并打进 Release 资产。
@@ -94,7 +94,7 @@ GPU 固件默认放在 `<build-dir>/firmware/elish-gpu`，缺失时脚本会自�
 
 ### 性能：schedplace
 只做「把某些线程放到某个核簇」，频率与能效仍归内核 schedutil + EAS。
-`configs/perf/schedplace.conf` 用 `interval_ms = 2000`、`probe_ms = 1000`：线程很多时（Firefox 常驻上千线程），
+`configs/perf/schedplace.conf` 用 `interval_ms = 2000`、`probe_ms = 1000`：线程很多时（实测单进程可达上千线程，如 Firefox），
 过密的事件驱动 `/proc` 扫描会吃满一个核（`bug.md` B-041）。
 
 ## 已知限制
@@ -106,7 +106,7 @@ GPU 固件默认放在 `<build-dir>/firmware/elish-gpu`，缺失时脚本会自�
 
 ## ⚠️ 默认凭据
 
-构建脚本会给 `magma` 用户一个**已知的默认口令**（见 `scripts/build-rootfs.sh`），仅用于首次登录调试。
+构建脚本会创建一个默认用户（用户名见 `scripts/build-rootfs.sh`，本镜像为 `magma`）并写入**该脚本生成的默认口令**，仅用于首次登录调试；仓库与文档都不记录该口令明文。
 **首次开机后请立即 `passwd` 修改**，并按需替换 `configs/rootfs/usr/share/elish/wifi-profile.nmconnection.template`。
 仓库里**不包含**任何真实 Wi-Fi 密码或密钥。
 

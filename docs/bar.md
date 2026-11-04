@@ -1,6 +1,12 @@
 # 顶部状态栏（waybar）
 
-设计稿：`docs/bar-design.svg`（浅色「TABLET STATUS BAR」）。真机逻辑分辨率 1280×800、scale 2。
+**结论先行**：waybar 是**现役状态栏**。`configs/rootfs/usr/local/bin/mango-shell-start` 会先
+`pkill -x waybar` 清掉旧实例，再在 :36 `setsid waybar &` **重新拉起**——这是"清理旧实例再启动"的
+重启逻辑，不是移除。实机核对：`waybar` 进程在跑、`/usr/bin/waybar` 存在。
+
+设计稿：`docs/bar-design.svg`（浅色「TABLET STATUS BAR」）。
+逻辑分辨率 1280×800、scale 2 是**本仓库测试机型参数**（其它设备用
+`mango-dispatch get all-monitors` 查本机的逻辑分辨率与 scale）。
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -18,7 +24,7 @@
 | 右 | `pulseaudio` / `network` / `bluetooth` | 点击分别 `kitty -1 -e alsamixer` / `nmtui` / `bluetoothctl` |
 | 最右 | `custom/power` | `systemctl poweroff` |
 
-外观：贴边占满整宽（margin 全 0）、高 38、圆角 16、浅色 `#F7F8FA`／描边 `#E2E6ED`。
+外观（尺寸为本仓库测试机型实测值，换机型量一下再调）：贴边占满整宽（margin 全 0）、高 38、圆角 16、浅色 `#F7F8FA`／描边 `#E2E6ED`。
 
 ## 图标为什么用 Nerd Font 码位
 
@@ -63,13 +69,13 @@ font-family: "Noto Sans CJK SC", "Symbols Nerd Font", "Noto Sans Symbols 2", san
 
 - `configs/rootfs/home/magma/.config/waybar/config.jsonc`
 - `configs/rootfs/home/magma/.config/waybar/style.css`
-- 会话启动：`configs/rootfs/usr/local/bin/mango-shell-start`（先 pkill 旧的 mango-bar/waybar，再拉起 waybar）
+- 会话启动：`configs/rootfs/usr/local/bin/mango-shell-start`（:31–32 `pkill -x waybar` 清旧实例，:36 `setsid waybar &` 重新拉起）
 
-## 历史：mango-bar
+## 历史：mango-bar（已归档，与现役 waybar 无关）
 
 `configs/mango-shell/mango-bar.c` 是自己写的 layer-shell + cairo 状态栏（含 SNI + dbusmenu 宿主）。
 它在 mango 上收不到任何输入事件（layer 表面与 xdg_toplevel 都试过，pointer/touch 均为 0），
-因此归档不用；实现与 bug 记录保留备查。
+因此归档不用；**状态栏不要重写，直接用 waybar**。实现与 bug 记录保留备查。
 
 ## 电源菜单（mango-powermenu）
 

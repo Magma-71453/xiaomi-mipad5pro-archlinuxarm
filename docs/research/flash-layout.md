@@ -8,11 +8,11 @@
 
 - **内核/引导镜像 → boot_b**：已验证（Armbian 官方刷入指南与 pmOS wiki 都这么做）。
 - **根文件系统 → linux 分区**：已验证（Armbian 指南 fastboot flash linux ...），
-  但 **linux 不是出厂分区**：它是用户先用 parted 缩小 userdata 后 **手工新建** 的 GPT 分区。
+  但 **linux 不是出厂分区**：它是操作者先用 parted 缩小 userdata 后 **手工新建** 的 GPT 分区。
 - **boot_b = /dev/block/sde37：UNVERIFIED**。没有任何一手来源把 boot_b 钉到 sde37；
   可验证的是 GPT 分区名就是 boot_b，Linux 侧一律通过 /dev/disk/by-partlabel/boot_b（或 /dev/block/by-name/boot_b）访问。
 - **dtbo 是否需要写/擦**：上游两套流程都要求**先 erase dtbo_b**，与本项目"禁止任何 erase、只写 boot_b+linux"的硬约束**直接冲突**
-  → 见文末 **CONFLICT-2** 一节（已上报 dispatcher / 用户裁决）。
+  → 见文末 **CONFLICT-2** 一节（处置结论见该节末条）。
 
 ---
 
@@ -21,7 +21,7 @@
 - 页面 URL：https://wiki.postmarketos.org/wiki/Xiaomi_Mi_Pad_5_Pro_(xiaomi-elish)
 - **抓取限制（重要，供复核者参考）**：该站点现已挂 Anubis 反爬。直接 GET 返回 HTTP 200 但正文是 JS 挑战页
   （"Making sure you're not a bot!"，7,475 B）；api.php 同样被拦；r.jina.ai 代理也只拿到挑战页。
-  本轮改用 Wayback 存档正文：
+  本文改用 Wayback 存档正文：
   http://web.archive.org/web/20260419194842id_/https://wiki.postmarketos.org/wiki/Xiaomi_Mi_Pad_5_Pro_(xiaomi-elish)
   （快照 2026-04-19，98,674 B；正文 26,727 字符）。CDX 列表显示 2026-06-02 之后的快照只有约 3 KB 的拦截页
   （http://web.archive.org/cdx/search/cdx?url=wiki.postmarketos.org/wiki/Xiaomi_Mi_Pad_5_Pro_(xiaomi-elish)&output=json&collapse=timestamp:6），
@@ -63,7 +63,7 @@ wiki 给出的**三种** rootfs 刷法（原文顺序；三种的内核都写 bo
 - wiki 页：https://github.com/amazingfate/armbian-xiaomi-elish/wiki/Flashing-Guide
 - 原文 raw：https://raw.githubusercontent.com/wiki/amazingfate/armbian-xiaomi-elish/Flashing-Guide.md （5,957 B / 169 行）
 
-### 2.1 linux 分区从哪来 —— 用户用 parted 新建（已验证）
+### 2.1 linux 分区从哪来 —— 操作者用 parted 新建（已验证）
 
 原文步骤（命令原样摘录，未改写）：
 
@@ -130,7 +130,7 @@ fastboot 侧用 fastboot flash boot_a|boot_b（第 84–87 行）。**同样没�
 
 - **UNVERIFIED**。已检索的一手来源（pmOS wiki 2026-04 正文、Armbian Flashing-Guide、armbian/build 的 elish 板级配置与 postinst 脚本、
   pipa 多系统文档）**全部不出现 sde37**；仓库 deviceinfo 也只声明 deviceinfo_flash_method="fastboot"（按名字刷）。
-- 要拿到一手证据只有两条路（本轮都不具备）：
+- 要拿到一手证据只有两条路（本文采集时不具备）：
   1. 真机上执行 ls -l /dev/block/by-name/boot_b 与 ls -l /dev/disk/by-partlabel/boot_b；
   2. 解析 Xiaomi 官方 fastboot 包里的 gpt_main*.bin / rawprogram*.xml（记录每个分区所在 LUN 与序号）。
 - **工程结论（不依赖 sde37 是否成立）**：脚本一律用**名字**（fastboot 分区名 boot_b；Linux 侧 /dev/disk/by-partlabel/boot_b），
@@ -154,9 +154,9 @@ fastboot 侧用 fastboot flash boot_a|boot_b（第 84–87 行）。**同样没�
     fastboot devices
     fastboot getvar current-slot            # 期望 a（Android 在 a 槽）→ b 槽空闲
     fastboot getvar partition-size:boot_b  # 只读，确认 boot_b 存在
-    fastboot getvar partition-size:linux   # 若报错 → linux 分区未创建：停止，交回用户
+    fastboot getvar partition-size:linux   # 若报错 → linux 分区未创建：停止，转人工处置
 
-    # 1) 内核/引导镜像 → boot_b（本项目 boot.img 内含两个 elish dtb）
+    # 1) 内核/引导镜像 → boot_b（本项目 boot.img 内含 elish dtb：默认 CSOT，BOE 用 boot-boe-alt.img）
     fastboot flash boot_b output/20261024/kernel/boot.img
 
     # 2) 根文件系统 → linux
@@ -192,12 +192,12 @@ fastboot flash 到 boot_a / dtbo_a / dtbo_b / system_b / userdata / super / vend
 
 | 编号 | 风险 | 证据 | 影响 | 处置 |
 |------|------|------|------|------|
-| R1 | **erase dtbo_b 是上游两套流程共同的前置步骤** | pmOS wiki 原文；Armbian 指南 "First erase dtbo_b" | 与"禁止 erase"硬约束冲突；不擦的后果未确证（UNVERIFIED，见 CONFLICT-2） | 上报 dispatcher / 用户裁决 |
+| R1 | **erase dtbo_b 是上游两套流程共同的前置步骤** | pmOS wiki 原文；Armbian 指南 "First erase dtbo_b" | 与"禁止 erase"硬约束冲突；不擦的后果未确证（UNVERIFIED，见 CONFLICT-2） | 按 §6 CONFLICT-2 的裁决（D-009）处置 |
 | R2 | linux 分区不存在（未做 §2.1 准备） | Armbian 指南：分区手建 | 刷入直接失败，不会误写别处 | 脚本先 getvar partition-size:linux 探测，失败即停 |
 | R3 | pmbootstrap flasher 会写 super / system_b / userdata | pmOS wiki 三种方法 | 违反硬约束 | 不采用 pmbootstrap 刷入流程（与 D-002 一致） |
 | R4 | fastboot set_active b 改写槽位标记 | wiki 与 Armbian 都要求 | 不改数据分区，但改变默认启动槽 | 保留为必要步骤；失败时不要用变体重试 |
 | R5 | Armbian 流程额外创建 esp（fat32，35 号） | Flashing-Guide 原文 | 误写会破坏 Boot | 白名单不含 esp；文档明确"不要写 esp" |
-| R6 | 镜像大于目标分区 | fastboot 行为 | 失败，不误写 | 打包阶段校验 rootfs.img 尺寸 < linux 分区尺寸（用户自定） |
+| R6 | 镜像大于目标分区 | fastboot 行为 | 失败，不误写 | 打包阶段校验 rootfs.img 尺寸 < linux 分区尺寸（按你的实际分区大小） |
 | R7 | 硬编码 /dev/block/sdeNN | sde37 无一手证据 | 可能 dd 到错误分区（最危险） | 一律用 GPT 名 / by-partlabel；脚本内禁止出现 /dev/block/sd 字面量 |
 | R8 | 面板变体选错（BOE vs CSOT） | wiki 两种 msm_drm.dsi_display0 | 黑屏，但不涉及分区 | boot.img 同时带两个 dtb（append_dtb=true），或提供两个 boot.img |
 
@@ -205,7 +205,7 @@ fastboot flash 到 boot_a / dtbo_a / dtbo_b / system_b / userdata / super / vend
 
 ## 6. CONFLICT-2：erase dtbo_b —— 硬约束 vs 上游流程
 
-**本项目硬约束（README / 任务书）**：只允许写 boot_b 与 linux 两个分区；**任何 erase 一律禁止**。
+**本项目硬约束（README）**：只允许写 boot_b 与 linux 两个分区；**任何 erase 一律禁止**。
 
 **上游要求（两处，均为一手原文）**：
 
@@ -222,17 +222,17 @@ fastboot flash 到 boot_a / dtbo_a / dtbo_b / system_b / userdata / super / vend
 **不 erase dtbo_b 时的可能后果（逐条标注证据级别）**：
 
 - 机理推测（**UNVERIFIED**）：ABL 启动 slot b 时会读取 dtbo_b 并把其中的 overlay/DFT 应用到内核 dtb。
-  我们自带的 dtb 是**追加在 boot.img 里**的（deviceinfo_append_dtb="true"，见 §4）；若 ABL 仍叠加 dtbo_b 的 Android overlay，
-  可能与我们的 dtb 冲突（面板/时钟节点被改），表现为黑屏或早期 hang。
+  本项目自带的 dtb 是**追加在 boot.img 里**的（deviceinfo_append_dtb="true"，见 §4）；若 ABL 仍叠加 dtbo_b 的 Android overlay，
+  可能与本项目的 dtb 冲突（面板/时钟节点被改），表现为黑屏或早期 hang。
 - pmOS 原文给出的唯一理由是 "dtbo_a reserved for android"：即只保留 a 槽 dtbo 给 Android，把 b 槽 dtbo 让给 Linux。
   这暗示"擦掉 b 槽 dtbo"的目的是**避免 Android 的 overlay 生效**，而不是"必须写一份 Linux 专用 dtbo"。
 - 没有任何一手来源说明"不擦就一定失败"，也没有说明"擦掉就一定成功"——两侧都缺真机证据。
-- 备选方案（需用户决策，本子代理不执行）：
+- 备选方案（需明确裁决，本文档不代为执行）：
   (a) 严格遵守硬约束：不擦 dtbo_b，真机验证能否启动；失败则把现象写入 bug.md；
-  (b) 由用户书面放宽硬约束，允许**仅** erase dtbo_b 一次（仍不触碰其它分区）；
-  (c) 若最终必须写入 dtbo，属**违反本项目硬约束**，必须回到 dispatcher 重新裁决（本文件不提供该命令）。
+  (b) 书面放宽硬约束，允许**仅** erase dtbo_b 一次（仍不触碰其它分区）；
+  (c) 若最终必须写入 dtbo，属**违反本项目硬约束**，必须重新裁决（本文件不提供该命令）。
 
-**已落定的裁决（用户 2026-10-24）**：采纳方案 (b) 的受限版本 = `docs/decisions.md` **D-009** "dtbo_b 一次性 erase 例外"：
+**已落定的裁决（2026-10-24）= `docs/decisions.md` D-009**："dtbo_b 一次性 erase 例外"：
 仅允许对 `dtbo_b` 执行一次 erase，且必须 (i) 由显式开关 `--allow-dtbo-erase` 触发（默认永不执行）；(ii) 执行前二次确认并打印完整命令；
 (iii) 结果写入 `output/<date>/FLASH-LOG` 与 `bug.md`；(iv) 除 `boot_b`/`linux` 外任何 `flash`、除 `dtbo_b` 外任何 `erase` 仍一律拒绝。
 本文件的分区白名单与风险清单据此保持：**erase 只有 `dtbo_b` 一个例外，其余不变。**

@@ -1,6 +1,7 @@
 # 终端三件套：fastfetch / htop / btop 的小米平板 5 Pro 适配
 
-**结论先行**：平板横屏是 **1280×800 逻辑像素、scale 2**，默认 `foot` 窗口只有 **107×43 格**
+**结论先行**：平板横屏是 **1280×800 逻辑像素、scale 2**（**本仓库测试机型参数**，其它设备用
+`mango-dispatch get all-monitors` 查），默认 `foot` 窗口只有 **107×43 格**
 （实测 `stty size` = `43 107`），而且**没有 emoji 字体**（只有 `Symbols Nerd Font` +
 `Noto Sans CJK SC`）。
 
@@ -8,7 +9,7 @@
 
 - **htop / btop**：**窄、短、单行、用 Nerd Font 图标代替文字**，配色落在 waybar 同一套色板
   （`#7AA2F7` 蓝 / `#73DACA` 青 / `#565F89` 灰 / `#D04F61` 红）。
-- **fastfetch**：本机个人版——**图片 logo（`kitty-direct`）+ 分组配色**，见 2.2。
+- **fastfetch**：本仓库测试设备配置——**图片 logo（`kitty-direct`）+ 分组配色**，见 2.2。
 
 | 工具 | 仓库里的文件 | 关键改动 |
 |---|---|---|
@@ -19,6 +20,10 @@
 ---
 
 ## 1. 这台机器上必须知道的约束
+
+> 下表「实测值」列是**本仓库测试机型**（Xiaomi Mi Pad 5 Pro / elish）的实测结果；换机型时
+> 分辨率、栅格、传感器名都要重新查（`mango-dispatch get all-monitors`、`stty size`、
+> `fc-list`、`/sys/class/hwmon`）。
 
 | 事实 | 实测值 | 影响的工具 |
 |---|---|---|
@@ -40,7 +45,7 @@
 
 ### 2.1 为什么不是默认配置
 
-`fastfetch --gen-config` 生成的默认模块表有 30 项，在本机实测会输出：
+`fastfetch --gen-config` 生成的默认模块表有 30 项，在本仓库测试机型实测会输出：
 
 - 两条一模一样的 `Battery:` 行（两个 fuel gauge）；
 - 一行空的 `PowerAdapter:`（没插充电器时）；
@@ -49,7 +54,7 @@
 
 ### 2.2 现在的做法
 
-conf 是**本机个人版**（`fastfetch --gen-config` 起手后自行改写），不是仓库早期那版
+conf 是**本仓库测试设备配置**（`fastfetch --gen-config` 起手后自行改写），不是仓库早期那版
 「窄、短、单行」的最小化配置。要点：
 
 ```jsonc
@@ -62,6 +67,11 @@ conf 是**本机个人版**（`fastfetch --gen-config` 起手后自行改写）�
 "display": { "separator": "", "key": { "width": 16, "type": "both" } }
 ```
 
+> `logo.source` 写的是绝对路径，`/home/magma` 是**设备上的用户 home**（对应仓库
+> `configs/rootfs/home/magma/`），不是开发主机上的私有文件：仓库里的
+> `configs/rootfs/home/magma/.local/share/fastfetch/tux.png` 就是它的真值源。
+> 用户名不同就改成你自己的 `~/.local/share/fastfetch/tux.png`（fastfetch 接受 `~`）。
+
 | 设定 | 值 | 原因 |
 |---|---|---|
 | `logo.type` | `kitty-direct` | **`auto` 渲染不了 PNG**：它把图片当成名为 `PNG` 的文字占位符打印。实测 `auto` 与 `kitty-direct` 的区别就是「一个 `PNG` 字样」与「真图」 |
@@ -71,7 +81,7 @@ conf 是**本机个人版**（`fastfetch --gen-config` 起手后自行改写）�
 | `key.width` | 16 | 标签列对齐 |
 | `keyColor` | `32` / `33` / `31` / `34` | 按分组用终端 16 色：绿=系统、黄=负载、红=桌面、蓝=运行时 |
 
-**图片必须是不透明或自带透明通道**。本机 `tux.png` 是**白底不透明**（四角均
+**图片必须是不透明或自带透明通道**。本仓库的 `tux.png` 是**白底不透明**（四角均
 `(255,255,255,255)`，全图透明像素数 0），所以在深色终端里显示为一块白方块。
 若要去底：
 
@@ -117,7 +127,7 @@ HTOPRC=/tmp/x htop      # 按 F2，方向键下移到 Colors
 
 实测映射（htop 3.5.3-1-arch，`F2 → Colors` 页直接读出来的）：
 
-| `color_scheme` | 菜单里显示的名字 | 本机实测评价 |
+| `color_scheme` | 菜单里显示的名字 | 本仓库测试机型实测评价 |
 |---|---|---|
 | 0 | Default | 默认深灰底；进程名带绿/青分色，和 waybar 浅色卡片不搭 |
 | 1 | Monochromatic | 纯灰阶，CPU 高低看不出 |
@@ -156,7 +166,7 @@ PID USER  RES SHR S CPU%▽MEM% TIME+  Command
 
 | 改动 | 原因 |
 |---|---|
-| 去掉 `PRI NI VIRT PRIV` | 默认 1280 宽下已经截断到 `/usr/local/bin/mango-dock-autohide` 外的部分，去掉不常用的 4 列后 Command 能多显示 ~30 字符 |
+| 去掉 `PRI NI VIRT PRIV` | 默认 1280 宽下已经截断到 `/usr/local/bin/mango-dock-autohide` 外的部分，去掉不常用的 4 列后 Command 能多显示 ~30 字符（1280 为本仓库测试机型的逻辑宽度） |
 | `show_program_path=0` | 只显示 basename，`/usr/local/bin/mango-place` 变成 `mango-place`；`highlight_base_name=1` 会把它高亮 |
 | `hide_kernel_threads=1` | 去掉约 200 个 kthread（开机后实测 109–217 个浮动），进程表多出 5 屏有效内容 |
 | `delay=20`（2 s） | 2 s 刷新在 8 核上几乎看不出滞后，省一整轮 `/proc` 扫描 |
@@ -246,7 +256,8 @@ tar -czf - -C configs/rootfs/home/magma \
 > PNG 不会让仓库膨胀，却能让设备复现出同样的界面。仓库里 `docs/research/*.png`
 > 已是同样性质的文件。**新增图片请先确认体积 < 200 KiB**。
 >
-> 设备上有两张图：`tux.png`（入库）与 `<wallpaper>.png`（758 KiB，**个人偏好，不入库**）。
+> 设备上可能同时有多张图：`tux.png`（入库）与自定义壁纸/logo（例如 `~/.wallpaper.jpg`，
+> 数百 KiB 量级，**个人偏好，不入库**）。
 > 配置里 `logo.source` 指向后者时，clone 下来的仓库无法复现——所以入库的是 `tux.png`。
 
 ### 必须核对内容真的变了

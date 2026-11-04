@@ -13,21 +13,23 @@
 | Image.gz | 15,489,546 B；file = gzip compressed；解压后 46,928,384 B = **Linux kernel ARM64 boot executable Image, little-endian, 4K pages** |
 | dtb | sm8250-xiaomi-elish-boe 137,023 B / -csot 137,027 B，均为 Device Tree Blob v17 |
 | 模块 | 587 个 .ko.zst（CONFIG_MODULE_COMPRESS_ZSTD=y → modules_install 产出压缩模块） |
-| 全量编译耗时 | **578 s**（16 线程，10747 行日志，warning=3） |
+| 全量编译耗时 | **578 s**（16 线程构建宿主上实测，10747 行日志，warning=3） |
 | 失败轮次 | 最终版本 0 次失败；过程中 1 次主动中止（见 §9） |
 
 ## 1. 实际执行的命令（全文）
 
     # 依赖（用户级，无系统级安装）：bc 1.08.2-1、dtc 1.8.1-1 从
     #   https://geo.mirror.pkgbuild.com/extra/os/x86_64/ 下载，bsdtar 解包到 .build/tools/usr
-    # 构建
+    # 构建（本次在 16 核构建宿主上执行，等价于 -j16；脚本按 -j$(nproc) 取核数）
     make -C .build/kbuild/src/linux-sm8250-7.2.0_git20261010 \
-         O=.build/kbuild/obj ARCH=arm64 LLVM=1 -j16 Image.gz dtbs modules
+         O=.build/kbuild/obj ARCH=arm64 LLVM=1 -j$(nproc) Image.gz dtbs modules
     # 后续
     make -C <src> O=<obj> ARCH=arm64 LLVM=1 INSTALL_MOD_PATH=.build/kbuild/modinstall INSTALL_MOD_STRIP=1 modules_install
     make -s -C <src> O=<obj> ARCH=arm64 LLVM=1 kernelrelease          # => 7.2.0
 
 - **未使用 CROSS_COMPILE**：LLVM=1 已让 kbuild 用 clang/ld.lld/llvm-* 直接产出 aarch64 目标，实测通过；全程没有引入 aarch64 gcc。
+- **并行度**：`-j$(nproc)` 即按构建主机核数取并行度（示例值为 `-j16`——16 核构建宿主）；上表 578 s 是 16 线程构建宿主上的实测值，
+  读者机器上的绝对耗时随核数、内存与磁盘而变，只有相对差异（compiler/fragment 之类）可横向比较。
 - config 生成：scripts/kconfig/merge_config.sh -m -O <obj> <base config> <fragments...>，随后 make olddefconfig。选 merge_config.sh 而非 scripts/config 的理由：fragment 文件本身就是仓库内可审阅的配置差异，合并顺序确定，且会打印"被覆盖的原值"，便于审计。
 
 ## 2. 产物（output/20261024/kernel/）
@@ -70,7 +72,7 @@ sha256sum -c SHA256SUMS：5/5 成功；MANIFEST.kernel 内 6 行的 SHA256/大�
 | CONFIG_PSI | =y（PSI_DEFAULT_DISABLED=n） | 内存压力观测可用 |
 | CONFIG_SCHED_MC | =y | MC 调度域存在，性能调优可用 |
 | CONFIG_DEBUG_FS | =y | debugfs 可用 |
-| CONFIG_SCHED_DEBUG | **7.2.0 上游已删除该符号**（全树无 config SCHED_DEBUG 定义） | 不是我方漏配：kernel/sched/debug.c 无条件编译，/sys/kernel/debug/sched/ 仍存在 |
+| CONFIG_SCHED_DEBUG | **7.2.0 上游已删除该符号**（全树无 config SCHED_DEBUG 定义） | 不是本项目漏配：kernel/sched/debug.c 无条件编译，/sys/kernel/debug/sched/ 仍存在 |
 | CONFIG_SCHEDSTATS | not set（符号仍在 lib/Kconfig.debug:1396） | 无 sched 统计计数；性能阶段若需要请加 fragment |
 | CONFIG_CGROUP_* | FREEZER/SCHED/CPUACCT/BPF=y，BLK_CGROUP=y，MEMCG=y | cgroup 控制族基本齐全 |
 | CONFIG_ZRAM / CONFIG_TMPFS | =y / =y | zram、tmpfs 内置 |
@@ -113,7 +115,7 @@ lib/modules/7.2.0/kernel/drivers/gpu/drm/panel/ 下）。触摸驱动 nt36523_ts
 ## 8. 模块压缩差异（与旧系统对比）
 
 设备旧系统 /lib/modules 是未压缩 .ko（其 config 未开 MODULE_COMPRESS），本产物是 .ko.zst。
-已与协调方确认：这不影响内核产物本身，只影响 initramfs/rootfs 处理模块的方式 —— 处理侧必须使用支持 zstd 解压的 kmod（Arch 的 kmod 默认支持），或用 fragment 关掉 MODULE_COMPRESS 重编。
+这不影响内核产物本身，只影响 initramfs/rootfs 处理模块的方式 —— 处理侧必须使用支持 zstd 解压的 kmod（Arch 的 kmod 默认支持），或用 fragment 关掉 MODULE_COMPRESS 重编。
 
 ## 9. 过程记录（失败/中止，如实）
 

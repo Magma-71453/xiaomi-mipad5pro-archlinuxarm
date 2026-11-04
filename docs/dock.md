@@ -35,8 +35,9 @@
 | `mango-dock-autohide.log` | `$XDG_RUNTIME_DIR/mango-dock-autohide.log` | autohide | 人 | 每次连接/施加都记一行；超过 64 KiB 自截断 |
 | `mango-dock.log` | `$XDG_RUNTIME_DIR/mango-dock.log` | `mango-dock-super` 循环 | 人 | dock 自己的 stderr + 每次退出的 rc/时间；超过 128 KiB 在下一轮启动前截断 |
 
-`$XDG_RUNTIME_DIR` 在设备上是 `/run/user/1000`（由 `mango-shell-start` 设定）。
-两个 Python 脚本在环境变量缺失/目录不存在时回落到 `/run/user/$(id -u)`。
+`$XDG_RUNTIME_DIR` 由 logind 给出，实机（本仓库测试设备）为 `/run/user/1000`；`mango-shell-start` 沿用这个值，不自己设。
+本文下面的命令统一写成 `/run/user/$(id -u)`——`1000` 只是默认用户 uid，多用户/多会话环境这样写才不会跑错目录。
+两个 Python 脚本在环境变量缺失/目录不存在时也回落到 `/run/user/$(id -u)`。
 
 **信号只在目标状态与 `mango-dock.geom` 的 hidden 字段不一致时才发**——这条是 autohide 与 toggle 不互相打架的前提，也是重复调用安全的原因。
 
@@ -92,17 +93,18 @@
 | 四指下滑 | `dispatch toggleoverview` | 离开 overview（同一个命令，靠状态判断方向） |
 
 判定阈值：起止点位移 `>= SWIPE_MIN = 120` 逻辑像素；横向位移更大 → 横向动作，否则按手指数分派。
-坐标是**逻辑坐标**（1280×800），面板原生 1600×2560、旋转 90°、scale 2。
+坐标是**逻辑坐标**（本仓库测试机型为 1280×800；面板原生 1600×2560、旋转 90°、scale 2 同为本机型实测值）。
+换成其它设备时先用 `mango-dispatch get all-monitors` 确认本机的逻辑分辨率与 scale，再换算阈值。
 
 ---
 
 ## 5. 构建与安装
 
-本机（x86_64）**没有 aarch64 交叉工具链**（`aarch64-linux-gnu-gcc`、`qemu-aarch64` 都不存在），所以 dock 必须在设备上 `cc` 编译；两个 Python 脚本直接 `install`。
+本仓库开发所用的 x86_64 主机（个人机或 CI）**没有 aarch64 交叉工具链**（`aarch64-linux-gnu-gcc`、`qemu-aarch64` 都不存在），所以 dock 必须在设备上 `cc` 编译；两个 Python 脚本直接 `install`。
 
 ```sh
 # 1) 只打包改动文件传过去（见 AGENTS.md 第 5 节）
-cd <repo-root>
+cd <仓库根目录>
 tar -czf /tmp/dock-patch.tar.gz \
     configs/mango-shell/mango-dock.c \
     configs/rootfs/usr/local/bin/mango-dock-autohide \
@@ -143,6 +145,10 @@ ssh magma@<device-ip> 'grep -c dock-toggle /usr/local/bin/mango-touchd'   # 期�
 
 以下命令都在设备上执行（`ssh magma@<device-ip>`）。
 
+> `$XDG_RUNTIME_DIR` 实机是 `/run/user/1000`（`1000` 是默认用户 uid）。下面的片段按 POSIX shell 写，
+> 用 `$(id -u)` 而不是写死 uid；远端登录 shell 是 fish，请用 `bash -s` 跑，或直接把
+> `$(id -u)` 换成 `$XDG_RUNTIME_DIR`。
+
 ### 6.1 组件是否都在跑
 
 ```sh
@@ -151,9 +157,9 @@ pgrep -a -f mango-dock
 期望三行：`mango-dock`、`python3 /usr/local/bin/mango-dock-autohide`、**没有**多余的旧实例。
 
 ```sh
-cat /run/user/1000/mango-dock-autohide.log | tail -5
+cat /run/user/$(id -u)/mango-dock-autohide.log | tail -5
 ```
-期望能看到 `start pid=... rt=/run/user/1000`、`watch connected /run/user/1000/mango-<pid>.sock`，
+期望能看到 `start pid=... rt=/run/user/<uid>`、`watch connected /run/user/<uid>/mango-<pid>.sock`，
 以及每次施加时的 `dock -> hidden (was 0)` / `dock -> shown (was 1)`。
 
 ### 6.2 信号幂等性（旧版 bug 的回归用例）
@@ -161,9 +167,9 @@ cat /run/user/1000/mango-dock-autohide.log | tail -5
 ```sh
 for i in 1 2 3 4; do
   kill -USR1 $(pgrep -x mango-dock); sleep 0.4
-  cat /run/user/1000/mango-dock.geom       # 期望最后一个字段 = 1
+  cat /run/user/$(id -u)/mango-dock.geom       # 期望最后一个字段 = 1
   kill -USR2 $(pgrep -x mango-dock); sleep 0.4
-  cat /run/user/1000/mango-dock.geom       # 期望最后一个字段 = 0
+  cat /run/user/$(id -u)/mango-dock.geom       # 期望最后一个字段 = 0
 done
 ```
 **实测**：4 轮 USR1/USR2 反复切换全部生效（旧版只有第一轮生效，第二轮起 dock 再也不出现）。
@@ -174,16 +180,18 @@ done
 
 ```sh
 mmsg get all-clients | grep -E 'is_fullscreen|is_maximized'
-cat /run/user/1000/mango-dock.geom          # 期望 hidden=1
+cat /run/user/$(id -u)/mango-dock.geom          # 期望 hidden=1
 ```
 解除后 hidden 回到 0。**实测**：全屏关闭 23 ms 内隐藏、最大化打开 53 ms 内隐藏。
 
 ### 6.4 手动态
 
 ```sh
+# 触摸注入脚本在设备上，路径为设备侧 /home/magma/touch_inject.py（仓库真值源
+# configs/rootfs/home/magma/touch_inject.py）。下面这行是在设备上执行，不是主机。
 sudo -n python3 /home/magma/touch_inject.py swipe 3 300 600 300 200   # 三指上滑
-cat /run/user/1000/mango-dock-autohide.state    # 期望 manual-hidden
-cat /run/user/1000/mango-dock.geom              # 期望 hidden=1
+cat /run/user/$(id -u)/mango-dock-autohide.state    # 期望 manual-hidden
+cat /run/user/$(id -u)/mango-dock.geom              # 期望 hidden=1
 ```
 此时再让窗口全屏/恢复，state 应**保持** manual-hidden、dock 不被窗口事件影响；
 再上滑一次 → `manual-shown N`（下一秒被 autohide 消费回 `auto`）、dock 显示。
@@ -241,7 +249,7 @@ zwlr_layer_surface_v1: error 0: wrong configure serial: N
 1. 隐藏 = `set_exclusive_zone(0)` + `set_input_region(空 region)` + 同一块缓冲重绘成
    全透明；显示 = zone 82 + `set_input_region(NULL)` + 立刻重绘；
 2. 表面**始终 mapped** ⇒ 不会 reset，两类协议错误都不会出现；
-3. `configure` 只在回调里记录，本轮 `wl_dispatch` 结束后由 `apply_configure()`
+3. `configure` 只在回调里记录，该次 `wl_dispatch` 结束后由 `apply_configure()`
    **只 ack 最新的一个**（wlroots 的 ack 会把列表里更旧的条目一并丢弃，逐个 ack 会自己
    踩自己）；
 4. 首个 configure 被 ack 之前（`acked == 0`）只能空提交属性。

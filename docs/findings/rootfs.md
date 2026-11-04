@@ -1,6 +1,6 @@
 # rootfs 模块发现记录（xiaomi-elish / Arch Linux ARM aarch64）
 
-本文件由 rootfs 模块产出，供 dispatcher 合并进 `bug.md`。所有数字均为本机实测。
+本文件是 rootfs 模块的调研记录（尚未录入 `bug.md`）。所有数字均为实机实测。
 构建脚本：`scripts/build-rootfs.sh`；配置：`configs/rootfs/**`；产物：`output/20261024/rootfs/`。
 
 ## 1. 结论摘要
@@ -259,7 +259,8 @@
 
 ## 4. aarch64 执行环境（qemu-user-static）
 
-宿主无 root、无 binfmt，因此 aarch64 二进制一律**显式指定解释器**执行：
+构建宿主无需 root、也无需注册 binfmt（`qemu-user-static` 为静态二进制，可直接以普通用户运行），
+因此 aarch64 二进制一律**显式指定解释器**执行：
 
 ```
 # 重建动态链接缓存
@@ -278,7 +279,7 @@ qemu-aarch64-static -L <rootfs> <rootfs>/usr/bin/visudo -c -f <rootfs>/etc/sudoe
 * `localedef`：en_US.UTF-8 约 19 s、zh_CN.UTF-8 约 20 s；产出
   `/usr/lib/locale/locale-archive`；`--list-archive` 可列出已编译 locale。
   这比“只写 /etc/locale.conf”更强：locale 数据真实存在，但**Arch 的 `locale-gen`
-  脚本本身未被逐字执行**（它用绝对路径 `/usr/lib/locale/`，无 root 无法 chroot），
+  脚本本身未被逐字执行**（它按绝对路径写 `/usr/lib/locale/`，不进入 chroot 就落不到位），
   等价效果由上述 `localedef --prefix` 达成，已在 §12 记录。
 * `visudo -c`：`/etc/sudoers：解析正确`、`/etc/sudoers.d/10-wheel：解析正确`。
   噪声行：`visudo: /etc/sudo.conf is owned by uid 1000, should be 0` —— 因为
@@ -292,13 +293,13 @@ qemu-aarch64-static -L <rootfs> <rootfs>/usr/bin/visudo -c -f <rootfs>/etc/sudoe
 | /etc/fstab | `PARTLABEL=linux / f2fs rw,relatime,background_gc=on,inline_xattr,inline_dentry,nodiscard,errors=remount-ro 0 1` + proc/sysfs/devpts/tmpfs（依据见 §8） |
 | /etc/hostname | `elish` |
 | /etc/hosts | `127.0.0.1 localhost elish`、`::1 localhost elish` |
-| 用户 | 删除底包自带的 `alarm` 用户/组（uid/gid 1000），新建 `magma` uid=1000 gid=1000、`/bin/bash`、`/home/magma`（0755，owner magma），加入 wheel,audio,video,input,render,kvm,lp,optical,rfkill,storage,network,power,games,users 中**实际存在**的组；`alarm` 也从所有组成员表中剔除 |
+| 用户 | 删除底包自带的 `alarm` 用户/组（uid/gid 1000），新建默认用户 `magma` uid=1000 gid=1000、`/bin/bash`、`/home/magma`（0755，owner magma），加入 wheel,audio,video,input,render,kvm,lp,optical,rfkill,storage,network,power,games,users 中**实际存在**的组；`alarm` 也从所有组成员表中剔除。仓库内对应的家目录树是 `configs/rootfs/home/magma/`，用户名可在此处按需替换 |
 | root | `/etc/shadow` 中 root 口令字段前缀 `!`（锁定，保留可解锁的哈希） |
-| magma 口令 | 使用 `openssl passwd -6 -salt <salt> <password>` 生成 SHA-512 crypt（`$6$`），**默认口令 <redacted>**，首次登录后必须修改；哈希/方法记录在此以便审计 |
+| 默认用户口令 | ALARM 底包自带的默认口令不可保留，由 `scripts/build-rootfs.sh` 生成口令哈希并写入 `/etc/shadow`（SHA-512 crypt，`$6$` 前缀），**构建脚本同时给出对应的明文默认口令**；首次登录后必须 `passwd` 修改。仓库与本文档**不记录口令明文，也不记录完整哈希** |
 | sudoers | `/etc/sudoers` 中 `%wheel ALL=(ALL:ALL) ALL` 由注释改为生效（文件 0440），另加 drop-in `/etc/sudoers.d/10-wheel`（0440）内容相同 |
 | locale | `/etc/locale.gen` 取消注释 `en_US.UTF-8 UTF-8`、`zh_CN.UTF-8 UTF-8` 并用 localedef 真实编译；`/etc/locale.conf`：`LANG=en_US.UTF-8` |
-| 时区 | `/etc/localtime -> ../usr/share/zoneinfo/Asia/Shanghai`，并写 `/etc/timezone` |
-| DNS | `/etc/resolv.conf` 由符号链接改为静态文件（223.5.5.5 / 1.1.1.1），运行期由 NetworkManager 接管 |
+| 时区 | `/etc/localtime -> ../usr/share/zoneinfo/Asia/Shanghai`，并写 `/etc/timezone`（镜像构建期固定值，运行期可用 `timedatectl set-timezone` 更改） |
+| DNS | `/etc/resolv.conf` 由符号链接改为静态文件（`223.5.5.5` / `1.1.1.1`，构建期兜底值），运行期由 NetworkManager 接管 |
 | systemd 启用 | `NetworkManager.service`、`systemd-timesyncd.service`、`bluetooth.service`、`seatd.service`、`fstrim.timer`、`systemd-oomd.service`；链接全部按单元文件 `[Install]` 段（WantedBy/RequiredBy/Alias）生成**相对符号链接**，目标路径均在 rootfs 内 |
 | 网络栈选择 | 选 **NetworkManager** 而非 systemd-networkd：设备联网是 ath11k 802.11ax + 蓝牙，NM 自带 nmcli/配置文件/polkit 集成与默认路由处理；networkd 需要手写 .network 且另起 wpa_supplicant 单元。脚本同时**显式删除** systemd-networkd 的 wants 链接以避免两套栈并存 |
 | 设备相关文件 | `/usr/lib/udev/rules.d/81-libssc-xiaomi-elish.rules`、`/usr/share/alsa/ucm2/Xiaomi/elish/{elish.conf,HiFi.conf}` + `conf.d/sm8250/Xiaomi Mi Pad 5 Pro.conf` 符号链接、`/usr/share/hexagonrpcd/hexagonrpcd-sdsp.conf`（取自 pmaports `device/testing/device-xiaomi-elish` 原文） |
@@ -468,7 +469,7 @@ fastboot flash linux "$IMG"      # 只允许 boot_b 与 linux 两个分区
    `Info: sector size = 512`，`fsck.f2fs -l` 读回 `log_sectorsize: 9 / log_sectors_per_block: 3`。
    原因：工具只能通过 `BLKSSZGET` 问块设备要扇区大小，普通文件查询失败即回落 512。
    对照实验：`-g android`（内部含 `-w 4096`）在文件上同样是 512，而且会打开
-   encrypt/verity 等我们内核挂不上的特性，所以也不能用。
+   encrypt/verity 等本项目内核挂不上的特性，所以也不能用。
 3. **任何 f2fs 工具都会重写该字段**：把 superblock 的 `log_sectorsize` 手工改成 12 后，
    `fsck.f2fs -l` 一打开就按宿主设备改回 9（实测 od 前 12/0、后 9/3）；
    `dump.f2fs` 同样打印 `[update_superblock: 943] Info: Done to update superblock`。
@@ -496,14 +497,19 @@ fastboot flash linux "$IMG"      # 只允许 boot_b 与 linux 两个分区
 `Current version only supports expanding the prebuilt filesystem.`。
 （内核虽有 F2FS_IOC_RESIZE_FS ioctl：fs/f2fs/file.c:3675、gc.c:2318，但该工具仍要求未挂载。）
 
-镜像 16 GiB，分区 /dev/sda36 = 205,039,616 KiB（≈195.5 GiB）。推荐流程（initramfs shell 或 rescue 环境，分区未挂载）：
+镜像 16 GiB，而 `linux` 分区在设备上通常是**整个分区的容量**（本机实测约 195 GiB，但以你的设备为准）。
+推荐流程（initramfs shell 或 rescue 环境，分区未挂载）：
 
 ```bash
-resize.f2fs /dev/sda36                      # -t 缺省 = 扩到设备末尾
-resize.f2fs -F /dev/sda36                   # 跳过确认对话
+resize.f2fs /dev/disk/by-partlabel/linux   # -t 缺省 = 扩到分区末尾
+resize.f2fs -F /dev/disk/by-partlabel/linux # 跳过确认对话
 # 需要显式目标扇区时（f2fs sector_size = 4096B）：
-resize.f2fs -t $(( $(blockdev --getsz /dev/sda36) / 8 )) /dev/sda36
+resize.f2fs -t $(( $(blockdev --getsz /dev/disk/by-partlabel/linux) / 8 )) /dev/disk/by-partlabel/linux
 ```
+
+> 不要照抄 `/dev/sdXN` 这类内核枚举名：同一台机器上 `linux` 既可能是 `sda36` 也可能是别的节点，
+> 一律用 `/dev/disk/by-partlabel/linux`。分区容量请用 `blockdev --getsz /dev/disk/by-partlabel/linux`
+> 或 `fastboot getvar partition-size:linux` 查你自己的设备。
 
 只在扩展方向支持（缩容才需要 -s）。已挂载根上执行会被拒绝，所以刷机指南必须把这一步放在
 “首次启动前 / initramfs 阶段”。rootfs 内已预装 f2fs-tools 1.17.0-1，可直接调用。
@@ -568,7 +574,7 @@ od -j 1024 -N 16 fb.img -> ... 09 00 00 00 03 00 00 00
 
 要点：
 
-* 清理策略：ALARM 根包自带 `lib/modules/7.1.6-1-aarch64-ARCH`（vmlinuz 模块，与我们的内核无关），
+* 清理策略：ALARM 根包自带 `lib/modules/7.1.6-1-aarch64-ARCH`（vmlinuz 模块，与本项目内核无关），
   脚本在安装前删除除目标 kver 之外的所有目录，避免 depmod/模块搜索拿到两套模块。
   清理前后：BEFORE = 7.1.6-1-aarch64-ARCH；AFTER = 7.2.0。
 * 安装方式：解包模块归档 → `cp -a <src>/7.2.0 <rootfs>/lib/modules/` → `depmod -b <rootfs> 7.2.0`。
@@ -660,9 +666,9 @@ libscenefx-0.5.so libxcb.so.1 libxcb-icccm.so.4 libxcb-randr.so.0
 
 * `seatd 0.9.3-1` 已安装，`seatd.service` 已按单元 [Install] 段生成相对符号链接启用
   （`/etc/systemd/system/multi-user.target.wants/seatd.service`）。
-* 新建 `seat` 组（脚本自动挑空闲 gid：本次 968，因为 997/998/999 已被占用），并把 `magma` 加入
+* 新建 `seat` 组（脚本自动挑空闲 gid，因此在其它系统上重建时该数字会不同），并把默认用户加入
   `wheel,audio,video,input,render,kvm,lp,optical,rfkill,storage,network,power,games,users,seat` 中实际存在的组；
-  实测 /etc/group 结果：wheel:x:998:magma / video:x:983:magma / seat:x:968:magma / magma:x:1000:。
+  实测 /etc/group 形如 `wheel:x:<gid>:<用户名> / video:x:<gid>:<用户名> / seat:x:<gid>:<用户名> / <用户名>:x:1000:`。
 * XDG_RUNTIME_DIR 由 logind 按 PAM 会话分配（/run/user/1000），本模块不额外创建；首启自检项见 §14。
 ## 12. 验收证据
 
@@ -784,7 +790,7 @@ libscenefx-0.5.so libxcb.so.1 libxcb-icccm.so.4 libxcb-randr.so.0
 | mango 落位 | 10 个文件 | /usr/bin 3 + /etc/mango 2 + wayland-sessions 1 + man1 2 + xdg-desktop-portal 1 + systemd/user 1 | PASS |
 | mango 依赖 | 全部可解析 | DT_NEEDED 31/31 在 rootfs 内找到 | PASS |
 | wlroots / scenefx | 0.20.2-1 / 0.5-1 | wlroots0.20 0.20.2-1、scenefx 0.5-1 已在 185 包清单内 | PASS |
-| seatd | 安装 + 启用 + seat 组 | seatd 0.9.3-1；seatd.service → multi-user.target.wants；seat:x:968:magma | PASS |
+| seatd | 安装 + 启用 + seat 组 | seatd 0.9.3-1；seatd.service → multi-user.target.wants；seat 组存在且默认用户已加入（gid 由脚本按空闲值分配） | PASS |
 | f2fs 镜像 | 4096 块、label=linux | mkfs -b 4096；fsck -l `Filesystem volume name: linux`、`log_blocksize: 12` | PASS |
 | 镜像 sector size | 4096（12） | 交付镜像两个 sb 均为 0c/00（12/0），与 fsck 校验版本恰差 4 字节 | PASS |
 | fsck | 通过 | fsck.f2fs -f exit 0、全部 [Ok..] | PASS |
@@ -798,7 +804,7 @@ libscenefx-0.5.so libxcb.so.1 libxcb-icccm.so.4 libxcb-randr.so.0
 | 固件（DSP） | adsp/cdsp/slpi/venus | 9 个文件在 …/xiaomi/elish/ | PASS |
 | hexagonrpcd | 有二进制 | ALARM 无此包；confd 已装但无消费进程 | FAIL（§13.1 已定级） |
 | f2fs 洁净态 | fsck 不动点 | [Fail] 0 行；fsck 对副本只改 4 字节（1033/1037/5129/5133） | PASS |
-| magma 口令 | $6$ SHA-512 | /etc/shadow 第二字段 100 字节，前缀 $6$；root 前缀 ! 锁定 | PASS |
+| 默认用户口令 | SHA-512 crypt（`$6$`） | /etc/shadow 第二字段 100 字节，前缀 `$6$`；root 前缀 `!` 锁定 | PASS |
 | tty1 autologin | drop-in + enable | /etc/systemd/system/getty@tty1.service.d/autologin.conf；getty@tty1.service → getty@.service | PASS |
 | serial-getty@ttyGS0 | opt-in | 默认无 getty.target.wants 链接，`elish.fixroot=1` 不再创建；需要时可 `systemctl enable --now serial-getty@ttyGS0.service` | PASS |
 | mango-session | 0755 | /usr/local/bin/mango-session（XDG_RUNTIME_DIR 0700、MOZ_ENABLE_WAYLAND、exec mango） | PASS |
@@ -810,23 +816,18 @@ libscenefx-0.5.so libxcb.so.1 libxcb-icccm.so.4 libxcb-randr.so.0
 
 ## 15. 真机可用性：口令 / tty1 自动登录 / MangoWM 自启 / 网络
 
-### 15.1 magma 口令（root 仍锁定）
+### 15.1 默认用户口令（root 仍锁定）
 
-生成命令（确定性 salt，便于复现；在宿主执行）：
+默认用户的口令哈希由 `scripts/build-rootfs.sh` 生成并写入 `/etc/shadow`（SHA-512 crypt，`$6$` 前缀），
+构建脚本同时给出对应的明文默认口令。**仓库与本文档不记录口令明文，也不记录完整哈希**——
+需要登录口令时以构建脚本的输出/Release 说明为准。
 
-```bash
-openssl passwd -6 -salt <salt> <password>
-```
+验收口径（只看字段形态，不看具体值）：
 
-输出（写入 `/etc/shadow` 第二字段）：
-
-```
-$6$<salt>$/[REDACTED-HASH]
-```
-
-* magma 的 shadow 字段长度 100 字节，以 `$6$` 开头（SHA-512 crypt，libxcrypt 支持），默认口令 `magma`。
+* 默认用户的 shadow 第二字段长度 100 字节，以 `$6$` 开头（SHA-512 crypt，libxcrypt 支持）；
+  `awk -F: '$1=="<用户名"{print length($2), substr($2,1,3)}' /etc/shadow` 可自查。
 * root 的字段以 `!!$y$j` 开头 → 锁定，root 不能登录。
-* tty1 自动登录不需要口令；ssh 用 <user>/<password>（首次登录后请 passwd 修改）。
+* tty1 自动登录不需要口令；ssh 登录改用构建脚本生成的默认口令，**首次登录后必须 `passwd` 修改**。
 
 ### 15.2 tty1 自动登录（getty drop-in）
 
@@ -879,24 +880,24 @@ fi
 
 ### 15.6 首启后应看到什么（检查清单）
 
-1. 不出现 `login:` 提示，直接进入 magma 的 shell 并被 mango 接管；
+1. 不出现 `login:` 提示，直接进入默认用户的 shell 并被 mango 接管；
 2. 短暂黑屏后出现 **MangoWM 空白平铺桌面**（无面板/壁纸属正常）；
 3. 若回退到 shell：看 `cat /tmp/mango.log`、`journalctl -u seatd -b`、`ls -l /dev/dri/`（应有 card0/renderD128）、`loginctl session-status`；
 4. 身份/权限：`id magma`（含 seat/video/input/render）、`ls -ld /run/user/1000`（0700 magma）；
 5. 网络：`nmcli device status`、`sudo elish-wifi-setup`、`ping -c1 223.5.5.5`；
-6. 远程：`systemctl status sshd`（首启生成 host key 后监听 22，用 <user>/<password>）。
+6. 远程：`systemctl status sshd`（首启生成 host key 后监听 22，用默认用户 + 构建脚本生成的口令登录）。
 
-### 15.7 首启扩容（真机事实：镜像 16 GiB，/dev/sda36 ≈195.5 GiB）
+### 15.7 首启扩容（镜像 16 GiB → 扩到 `linux` 分区末尾）
 
 必须未挂载时执行（见 §7.4），例如 initramfs shell：
 
 ```bash
-resize.f2fs /dev/disk/by-partlabel/linux      # -t 缺省 = 扩到设备末尾
+resize.f2fs /dev/disk/by-partlabel/linux      # -t 缺省 = 扩到分区末尾
 reboot
 ```
 
 验证：
 
-* `df -h /` → 从 16G 变约 193G；
+* `df -h /` → 由 16G 变为**你的 `linux` 分区实际大小**（用 `findmnt /` 或 `blockdev --getsz /dev/disk/by-partlabel/linux` 对照）；
 * 离线核验：`dump.f2fs /dev/disk/by-partlabel/linux` 的 `total FS sectors`，或 `fsck.f2fs -l /dev/disk/by-partlabel/linux` 的 `block_count`；
 * 也可 `resize.f2fs -t <sectors> <dev>` 显式指定目标扇区（4096 字节扇区）。

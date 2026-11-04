@@ -13,7 +13,7 @@
 | 内核 | postmarketOS 的 linux-postmarketos-qcom-sm8250，带本仓库补丁（configs/kernel/patches/） |
 | 桌面 | **MangoWM**（wlroots，dwm 风格）+ **waybar** 状态栏 + 自写 dock / 编辑模式 / 电源菜单 |
 | x86 兼容 | FEX-Emu |
-| 存储 | /dev/disk/by-partlabel/linux（约 196 GiB f2fs），引导走 boot_b |
+| 存储 | /dev/disk/by-partlabel/linux（f2fs，按设备 `linux` 分区实际大小；本仓库测试设备约 195 GiB），引导走 boot_b |
 
 ---
 
@@ -49,7 +49,7 @@ bug.md                     缺陷台账（唯一）
 
 ```sh
 # 交互式（远端登录 shell 是 fish！）
-ssh magma@<device-ip>            # 密码现场问，仓库不留
+ssh magma@<device-ip>            # 口令不入库；由构建脚本生成，首次登录必须修改
 
 # 自动化（推荐）：askpass 免交互
 cat > /tmp/ap.sh <<'EOF'
@@ -68,7 +68,9 @@ SSH_ASKPASS=/tmp/ap.sh SSH_ASKPASS_REQUIRE=force setsid -w \
 - magma 有 **NOPASSWD sudo**（`sudo -n` 直接可用）。
 - **由 waybar / 桌面启动的进程 PATH 只有 /usr/bin**，脚本里调用 /usr/local/bin/* 必须写绝对路径；检测程序是否存在也不能只靠 `command -v` / `shutil.which()`。
 - `mango-dispatch` 需要 `XDG_RUNTIME_DIR=/run/user/1000`，socket 是 `/run/user/1000/mango-<pid>.sock`。
-- 截图：设备上没有 imagemagick，用 `grim /tmp/x.png`，再 `ssh 'cat /tmp/x.png' > /tmp/x.png` 到主机裁剪。
+- 截图：`grim /tmp/x.png` 在设备上抓屏，再 `ssh 'cat /tmp/x.png' > /tmp/x.png` 取回主机裁剪。
+  ImageMagick 的设备/主机侧可用性需现场核对（`command -v magick convert`）；本仓库测试设备上两者都存在，
+  但 `grim` 是抓屏的唯一必需依赖。
 
 ---
 
@@ -107,11 +109,12 @@ ssh ... 'ls -l /usr/local/bin/xxx'              # 看时间戳
 | 看窗口几何 | `mango-dispatch get all-clients`（含 x/y/width/height/is_focused/tags） |
 | 看图层 | `mango-dispatch get all-layers` |
 | 看日志 | `journalctl -b -1 --no-pager -o short-monotonic \| tail -30` |
-| **模拟触摸**（唯一的自动化输入手段） | `sudo python3 /home/magma/touch_inject.py tap <X> <Y>`（uinput 虚拟触摸屏，需 root） |
+| **模拟触摸**（本仓库测试环境下唯一的自动化输入手段） | `sudo python3 /home/magma/touch_inject.py tap <X> <Y>`（uinput 虚拟触摸屏，需 root） |
 
 ### 触摸注入 touch_inject.py（关键）
 
 真值源 `configs/rootfs/home/magma/touch_inject.py` → 设备 `/home/magma/touch_inject.py`，纯 Python3 标准库。
+（本仓库测试设备上该文件确实存在；若换设备或重刷后 `/home/magma` 被清空，按仓库内真值源重新同步即可。）
 每次运行 = 建一个 uinput 虚拟触摸屏 → 注入一个手势 → 销毁；`/dev/input` 不留节点。
 建好后先等 0.8 s 让 libinput 认出设备，销毁前再等 0.8 s，否则事件被丢弃。
 
@@ -126,7 +129,8 @@ sudo python3 /home/magma/touch_inject.py swipe 3 200 400 900 400   # 3 指横滑
 sudo python3 /home/magma/touch_inject.py swipe 4 400 600 400 200   # 4 指竖滑（overview）
 ```
 
-参数一律是**逻辑坐标**（1280×800）。面板物理 1600×2560、旋转 90°、scale 2，
+参数一律是**逻辑坐标**（本仓库测试机型为 1280×800；其它设备按 `mango-dispatch get all-monitors` 查）。
+面板物理 1600×2560、旋转 90°、scale 2（本仓库测试机型参数；其它设备按 `mango-dispatch get all-monitors` 查），
 `EVIOCGABS` 实测设备 ABS 范围是 **MT_X 0..1599 / MT_Y 0..2559**（不是 1279/799），反变换：
 
 ```
@@ -152,14 +156,14 @@ GTK 收到的窗口内坐标是 (295.5,196.5)（期望 (300,200)）；(300,200)/
 
 | 组件 | 位置（仓库） | 现状 |
 |---|---|---|
-| 状态栏 | `configs/rootfs/home/magma/.config/waybar/{config.jsonc,style.css}` | **waybar**：浅色圆角、贴边全宽、高 38、窗口图标胶囊、中文时钟、SNI 托盘、音量/网络/蓝牙、电源键 |
+| 状态栏 | `configs/rootfs/home/magma/.config/waybar/{config.jsonc,style.css}` | **waybar（现役）**：浅色圆角、贴边全宽、高 38、窗口图标胶囊、中文时钟、SNI 托盘、音量/网络/蓝牙、电源键。由 `mango-shell-start` 拉起，不要替换成自写 bar |
 | 电源菜单 | `configs/rootfs/usr/local/bin/mango-powermenu` | Python3+GTK3，Material 3 卡片 4×1（睡眠/关机/重启/Android），二次确认，带执行日志与重启看门狗 |
 | 编辑模式 | `configs/mango-shell/mango-actions.c` | 全屏 overlay，选中窗口后 ✕ / ⛶ / ✋，已优化拖动性能 |
 | dock | `configs/mango-shell/mango-dock.c` | 底部图标条 + 编辑模式入口 |
 | 会话启动 | `configs/rootfs/usr/local/bin/mango-shell-start` | 由登录脚本（fish）启动会话；要求开机顺序可靠时应交给 systemd system unit 管理 |
 | 归档 | `configs/mango-shell/mango-bar.c` | 自写 C 状态栏，**已废弃**（mango 不给它派发输入），保留参考 |
 | 槽位切换 | `scripts/build-qbootctl.sh` | 编译 qbootctl；`-s 0` = _a = Android，`-s 1` = _b = Linux |
-| 终端三件套 | `configs/rootfs/home/magma/.config/{fastfetch,htop,btop}/` | 按 107×43 格窗口 + 只有 Nerd Font（无 emoji）重调：fastfetch 图标菜单 + 小 logo、htop Nord + `AllCPUs2` + 温度、btop 自写 `elish` 主题；同步用 `scripts/sync-terminal-configs.sh`，详见 `docs/terminal-tools.md` |
+| 终端三件套 | `configs/rootfs/home/magma/.config/{fastfetch,htop,btop}/` | 按 107×43 格窗口（本仓库测试设备实测）+ 只有 Nerd Font（无 emoji）重调：fastfetch 图标菜单 + 小 logo、htop Nord + `AllCPUs2` + 温度、btop 自写 `elish` 主题；同步用 `scripts/sync-terminal-configs.sh`，详见 `docs/terminal-tools.md` |
 
 ---
 
@@ -207,10 +211,10 @@ send(); while (recv(fd, ...) > 0) { if (buf 以 '}' 结尾) break; } close(fd);
 窗口标题来自合成器，可能是截断的多字节序列。表现：只有前半部分 UI 出现，后面全没了。
 修法：解析后 `sanitize_utf8()`，并在绘制分段处检查 `cairo_status()`，异常则重建 context。
 
-### 9.3 mango 不给我们自己的 layer 表面派发输入
+### 9.3 mango 不给自写 layer 表面派发输入
 
 自写 C 状态栏在 mango 上**收不到任何 pointer / touch 事件**（layer 表面与 xdg_toplevel 都试过，均为 0），而 dock 和 waybar 可以。
-**结论：状态栏用 waybar，不要重写。**（归档代码在 configs/mango-shell/mango-bar.c）
+**结论：状态栏用 waybar，不要重写。**（waybar 是现役方案，实测在运行；归档代码在 configs/mango-shell/mango-bar.c）
 
 ### 9.4 polkit 没有认证代理 → systemctl 静默失败
 
@@ -261,15 +265,26 @@ emoji 全变方块。用已安装的 `Symbols Nerd Font` 码位（`U+F1EB` / `U+
 mgmt 层于是**不发布 index**（`btmon` 里能看到 `Unconfigured Index Removed` + `Delete Index`），
 bluetoothd 自然拿不到适配器。副作用是控制器反复 reprobe、白耗电。
 
-修法：写一个本地 MAC，内核立刻 open 并发布 index。
+修法：给控制器写一个**本机唯一**的本地管理 MAC，内核立刻 open 并发布 index。
+地址不要手写固定值——必须用 `elish-mac-address` 从本机唯一序列号派生（见 B-051）。
+写死的地址会让同一个镜像刷到第二台机器时撞号。
 
 ```sh
-sudo btmgmt --index 0 public-addr 02:00:00:12:34:57
-bluetoothctl list     # -> Controller 02:00:00:12:34:57 elish [default]
+# 正确做法：交给 unit，开机自动跑（它内部调用 elish-mac-address bt）
+sudo systemctl start elish-bt-mac.service
+sudo systemctl status elish-bt-mac.service --no-pager
+bluetoothctl list     # -> Controller <derived-bt-mac> elish [default]
+
+# 手工排查时只看派生结果，不要自己编 MAC
+elish-mac-address bt     # 打印本机应使用的 BD_ADDR
 ```
 
-已固化为 `elish-bt-mac.service`（`configs/rootfs/etc/systemd/system/`）。**开机必跑**：
-MAC 只存在控制器里，`hci_uart` 每次 probe（含每次开机）都会重置它。
+> ⚠️ 不要再照旧文档手写 `btmgmt public-addr <固定值>`。那是 B-047 的临时手段，
+> 已由 B-051 用序列号派生取代；照抄会让所有设备拿到同一个地址。
+
+已固化为 `elish-bt-mac.service` + `/usr/local/bin/elish-bt-mac`
+（`configs/rootfs/etc/systemd/system/`、`configs/rootfs/usr/local/bin/`）。
+**开机必跑**：MAC 只存在控制器里，`hci_uart` 每次 probe（含每次开机）都会重置它。
 
 排查用：`btmgmt info`（看 Index list 有没有条目）、`btmon`（看是否 Unconfigured）、
 `sudo journalctl -u bluetooth -b`。

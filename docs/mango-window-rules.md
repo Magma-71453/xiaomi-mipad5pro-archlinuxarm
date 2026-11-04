@@ -20,8 +20,8 @@ mango 裸启动（无 `-c`）时按默认路径找配置。二进制里编译进
 | `/etc/mango/config.conf` | **是** | `exec_once=/usr/local/bin/mango-shell-start` 在这里（第 333 行），桌面确实起来了；`window_rule=app_id:.*,is_floating:1` 也在这里。实测改它 + 重载 + 重开窗口即生效 |
 | `/etc/mango/config.toml` | 否（另一格式的冗余副本） | 没有 `exec_once`、没有 `window_rule`，改它没反应 |
 
-两个文件是同一套配置的两种写法（`key=value` vs TOML）。**本机读的是 key=value 的
-`config.conf`，只改它。**
+两个文件是同一套配置的两种写法（`key=value` vs TOML）。**mango 实际读的是 key=value 的
+`config.conf`，只改它。**（本仓库测试设备实测；换设备用 `mango -p` 与进程实际加载的文件确认）
 
 改完先做语法校验（**必做**）：
 
@@ -63,7 +63,7 @@ window_rule_once=参数:值,...,app_id:<正则>      # 只在窗口第一次打�
 
 ### 3.1 规则优先级：**写在后面的覆盖前面的**
 
-多条 `window_rule` 都匹配同一个窗口时，对**同一个参数**，靠后那条赢。本机有一条全浮动兜底：
+多条 `window_rule` 都匹配同一个窗口时，对**同一个参数**，靠后那条赢。本仓库测试设备的配置里有一条全浮动兜底：
 
 ```sh
 # /etc/mango/config.conf（第 324 行附近）
@@ -79,8 +79,8 @@ window_rule=app_id:waydroid.*,is_floating:0,is_fullscreen:1   # 例外（后，�
 
 ### 3.2 `mango-place` 会缩放浮动窗口
 
-本机常驻的 `mango-place` 会把每个 **`is_floating` 的可见窗口**缩到 11/16 × 7/10 并居中
-（实测 1280×800 屏上开出来就是 880×560）。所以：
+本仓库测试设备常驻的 `mango-place` 会把每个 **`is_floating` 的可见窗口**缩到 11/16 × 7/10 并居中
+（该机型实测：1280×800 逻辑屏上开出来就是 880×560）。所以：
 
 - 想让窗口**全屏 / 指定尺寸**，必须设 `is_floating:0`，否则 `mango-place` 会把它拉回去缩小；
 - 只有「浮动小窗」才该留 `is_floating:1`（那正是 `mango-place` 存在的意义）。
@@ -98,8 +98,8 @@ window_rule=app_id:waydroid.*,is_floating:0,is_fullscreen:1   # 例外（后，�
 ```sh
 # 连上设备（远端 shell 是 fish，命令一律包一层 bash -s）
 dbclient -i ~/.ssh/dropbear_ed25519_host_key magma@<device-ip>
-# 设备上执行：
-export XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0
+# 设备上执行（bash；fish 里命令替换要写成 (id -u)）：
+export XDG_RUNTIME_DIR=/run/user/$(id -u) WAYLAND_DISPLAY=wayland-0   # 1000 是默认用户 uid
 waydroid app launch com.android.calculator2      # 拉起一个目标 app
 sleep 5
 mango-dispatch get all-clients                   # 看 appid
@@ -154,7 +154,7 @@ sleep 5; mango-dispatch get all-clients
  "x":0,"y":0,"width":1280,"height":800}
 ```
 
-`is_fullscreen:true` + `is_floating:false` + 坐标铺满整屏（0,0 到 1280×800）= 成功。
+`is_fullscreen:true` + `is_floating:false` + 坐标铺满整屏（0,0 到逻辑分辨率，测试机型为 1280×800）= 成功。
 改完记得把测试窗口关掉。
 
 ---
@@ -169,7 +169,7 @@ sleep 5; mango-dispatch get all-clients
   不确定就用 §4.1 的 `get all-clients` 现查。
 - **真全屏会盖住状态栏/dock**：这是 `is_fullscreen` 的预期行为（`mango-dock-autohide`
   也会自动藏 dock）；要留 dock 用 `is_fake_fullscreen:1`。
-- 本机那条 waydroid 全屏规则是**设备本地改动**，没进仓库；若日后按 AGENTS.md §5 从仓库
+- 测试设备上那条 waydroid 全屏规则是**设备本地改动**，没进仓库；若日后按 AGENTS.md §5 从仓库
   重新同步 `/etc/mango/config.conf`，会被覆盖掉，需按本指南重新加一行。
 - 完整参数表与更多示例见上游 wiki：
   <https://github.com/DreamMaoMao/mango/wiki/> 、<https://mangowm.github.io/docs/window-management/rules/> 。

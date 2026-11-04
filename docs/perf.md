@@ -18,7 +18,7 @@ CPU 上运行”，从而在不与内核抢决策的前提下改善交互路径�
 
 旧实现 `gamemod-elish-src`（`gamemod-elish run -- <cmd>`）属于 `gamemodrun` 一类：
 游戏启动时把整机 governor 切成 `performance`，并把 `steamwebhelper` 的**所有**线程绑到
-小核。用户 2026-10-24 的裁决是：这类做法收益有限、可优化，**不得作为核心调度器**。
+小核。本仓库在 2026-10-24 的裁决是：这类做法收益有限、可优化，**不得作为核心调度器**。
 因此新方案：
 
 * 核心机制重写（规则化放置 + 运行时拓扑发现 + 事件/周期扫描）；
@@ -48,7 +48,7 @@ CPU 上运行”，从而在不与内核抢决策的前提下改善交互路径�
 prime 的职责；`perf = big ∪ prime` 仍然是正确的“性能核”语义，且不会把 CPU 划到
 不存在的簇里。
 
-目标机实测（用户提供，2026-10-24）：
+本仓库测试设备实测（2026-10-24）：
 
 ```
 cpu0-3: cpu_capacity 284   -> little 0-3
@@ -127,7 +127,7 @@ cpu7:   cpu_capacity 1024  -> prime  7
   而不是等下一次全量扫描；
 * **inotify**：前台标记文件 `foreground_file`（默认 `/run/schedplace/foreground`）
   的创建/写入会立即触发重算；同时对被跟踪进程的 task 目录尝试加 watch，
-  但**当前内核（7.2.11）不会为 procfs task 目录产生 inotify 事件**（已实测），
+  但**当前内核（7.2.0）不会为 procfs task 目录产生 inotify 事件**（已实测），
   所以它只是机会性加速，正确性由上面两条保证；
 * `SIGUSR1` 打印状态；`SIGTERM`/`SIGINT` 优雅退出并按 `restore_on_exit` 恢复原掩码。
 
@@ -219,7 +219,7 @@ schedplace: tracked tid=... start=... rule=... original_mask=0-15 affinity_chang
 
 * 临时停用：`systemctl stop schedplace`（`SIGTERM` 会按 `restore_on_exit` 恢复被改线程
   的原 affinity，并把受管 cpuset 组放宽回在线全集）；
-* 全速 `makepkg` 构建（本机默认规则会把构建钉在小核、慢 ~2.8x）：构建前
+* 全速 `makepkg` 构建（默认规则会把构建钉在小核、慢 ~2.8x）：构建前
   `systemctl stop schedplace`，构建后 `systemctl start schedplace`；实测与用法见
   `docs/build-performance.md` §4.3；
 * 彻底卸载：`systemctl disable --now schedplace`、`make uninstall`、删除

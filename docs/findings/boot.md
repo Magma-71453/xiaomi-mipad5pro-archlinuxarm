@@ -2,7 +2,7 @@
 
 模块边界：`scripts/make-bootimg.py`、`scripts/build-initramfs.sh`、`configs/initramfs/init`、
 `scripts/flash-elish.sh`、`scripts/audit-hygiene.sh`、`tests/`、`output/20261024/boot/`、
-`output/20261024/MANIFEST.boot`、`docs/flash-guide.md`。原始发现写在此处，由 dispatcher 合并进 bug.md。
+`output/20261024/MANIFEST.boot`、`docs/flash-guide.md`。原始发现写在此处，确认后合并进 `bug.md`。
 
 ## 1. 结论摘要
 
@@ -27,7 +27,8 @@
   `kernel_size` = Image.gz + 全部 DTB。任何 2048 对齐/填充都会让 ABL 报
   `Failed to load/authenticate boot image: Load Error`（D-018 / B-022；2026-11-04 曾回归，见 B-057），
   `make-bootimg.py --verify` 会拒绝带填充的镜像。
-  **实测机型是 CSOT**，所以默认产物只带 `sm8250-xiaomi-elish-csot.dtb`；BOE 走独立文件名 `boot-boe-alt.img`。
+  默认产物以 **CSOT** 为准（构建者设备为 CSOT），只带 `sm8250-xiaomi-elish-csot.dtb`；
+  **BOE 面板的设备请刷 `boot-boe-alt.img`**（文件名即区分）。
 - **192 MiB 硬上限**（`boot_b` = 393216 扇区 = 201,326,592 B）：`--max-size` 默认 201326592，
   生成时超限直接 `exit 1`（提示"压缩 initramfs 或减少 dtb"），`--verify` 也按同一上限判失败（退出码 3）。
 - padding：header 页尾、段间、文件尾部三段都必须为 0；镜像总长必为 page_size 整数倍。
@@ -82,7 +83,8 @@ python3 scripts/make-bootimg.py --kernel <kernel>/Image.gz \
 - erase 三重门：`--execute` + `--allow-dtbo-erase` + 二次确认（`--confirm-erase dtbo_b` 或交互输入）；
   非交互未确认 → `exit 1` 且一条 fastboot 都不发。
 - 执行记录追加到 `output/20261024/FLASH-LOG`（`<ts>  fastboot <op> ... -> ok`），供审计复核。
-- 无 `/dev/block` 写路径（仅注释说明 `boot_b` ≈ `sde37`）；有静态断言把关。
+- 无 `/dev/block` 写路径（仅注释举例 `boot_b` ≈ `sde37`）；有静态断言把关。
+  **块设备号因设备而异**，一律用 `/dev/disk/by-partlabel/boot_b`（或 `/dev/block/by-name/boot_b`），不要把 `sdeNN` 当常量。
 
 ## 5. 洁净度审计策略
 
@@ -99,31 +101,31 @@ python3 scripts/make-bootimg.py --kernel <kernel>/Image.gz \
   绝不静默。默认不排除任何路径。
 - MANIFEST / FLASH-LOG 缺失只 WARN，不崩。
 
-## 6. 跨模块不一致（需 dispatcher 裁决）
+## 6. 跨模块不一致（需确认的事项）
 
-1. **rootfs 的 fstab 仍是 ext4**：`configs/rootfs/etc/fstab` = `PARTLABEL=linux / ext4 rw,relatime`，
-   与本轮 f2fs 裁决冲突。`/init` 的 f2fs→ext4 兜底能容忍，但指南 b) 与 fstab 不一致需 rootfs 模块跟进。
-2. **决策编号**：D-009 / D-013 来自裁决原文；f2fs 改用的编号我暂写 **D-010**（`/init`、`build-initramfs.sh`、
-   `flash-guide.md`、本文件都引用），请 dispatcher 落号或改名。
+1. ~~rootfs 的 fstab 仍是 ext4~~（已解决）：`configs/rootfs/etc/fstab` 现为
+   `PARTLABEL=linux / f2fs rw,relatime,background_gc=on,inline_xattr,inline_dentry,nodiscard,errors=remount-ro 0 1`，与指南 b)/c) 一致。
+   `/init` 仍保留 f2fs→ext4 兜底，兼容旧的 ext4 根镜像。
+2. **决策编号**：D-009 / D-013 来自裁决原文；f2fs 改用的编号暂记 **D-010**（`/init`、`build-initramfs.sh`、
+   `flash-guide.md`、本文件都引用），需在 `docs/decisions.md` 落号或改名。
 3. **`fastboot --set-active=b` 不在脚本内**：指南要求该步骤，但脚本策略只允许 flash/getvar/reboot-bootloader 与门控 erase。
-   要不要交给脚本需一次明确裁决（属策略扩张，未擅自放宽）。
+   是否交给脚本属策略扩张，需明确裁决后再改（当前未放宽）。
 4. **f2fs 扇区大小未验证**：普通文件上 `mkfs.f2fs -w 4096` 仍报 `Info: sector size = 512`；4096 扇区镜像需要
-   4096 逻辑扇区后端（`losetup -b 4096` 需 root，本机不可用）。已写进指南"待确认"。
-5. **FLASH-LOG 语义**：指令说"若存在则必须包含被执行的 erase 记录"。我按"若发生过 erase 就必须如实记录、且记录只可能是
-   `dtbo_b`；纯 flash 日志合法（仅 WARN）"实现——因为要求"必须有 erase 行"会让一条纯 flash 日志误报。若 dispatcher 要硬失败，
-   改一行即可。
+   4096 逻辑扇区后端（`losetup -b 4096` 需 root，构建主机不具备）。已写进指南"未验证"。
+5. **FLASH-LOG 语义**：审计规则按"若发生过 erase 就必须如实记录、且记录只可能是 `dtbo_b`；纯 flash 日志合法（仅 WARN）"
+   实现——因为要求"必须有 erase 行"会让一条纯 flash 日志误报。若要改成硬失败，改一行即可。
 6. **`resize.f2fs` 依赖 rootfs 自带 f2fs-tools**：指南已把它列为首启人工步骤，脚本不执行；需 rootfs 模块确认包列表含 f2fs-tools。
 
-7. **仓库内出现其他模块的构建残留（我的审计判 FAIL，属真实缺陷而非误报）**：`perf/schedplace/.build/*.o`
+7. **仓库内出现其他模块的构建残留（审计判 FAIL，属真实缺陷而非误报）**：`perf/schedplace/.build/*.o`
    （9 个 .o，380K，2026-10-24 18:13 生成）落在仓库内，违反"源码/产物分离"。裸跑 `audit-hygiene.sh` 因它返回
    10 failure；**本模块自己的路径 0 failure**（`scripts/ tests/ configs/initramfs/ docs/findings/ output/20261024/boot/`）。
    需要 perf 模块把编译输出移到 `../.build/` 或构建后清理。为不掩盖问题，审计新增 `--ignore-dir REL`（必打 WARN）；
    `tests/test-hygiene.sh` 对真实仓库改为三条断言：不崩溃、本模块零失败、排除已知外部构建目录后为 0。
 
-8. **`--flash PART=IMG` 忽略 `--root-sha256`/`--boot-sha256`（用户真机踩到）**：原来哈希按"传参形式"绑定，
+8. **`--flash PART=IMG` 忽略 `--root-sha256`/`--boot-sha256`（真机使用中暴露）**：原来哈希按"传参形式"绑定，
    只有 `--root IMG` 才吃 `--root-sha256`。已改为按**目标分区角色**绑定：`--flash linux=IMG` 用
    `--root-sha256`、`--flash boot_b=IMG` 用 `--boot-sha256`，两者同时给出时各取所需（新增 4 条用例覆盖）。
-9. **MANIFEST 解析过窄（用户真机踩到）**：只认空格列序且默认只找 `MANIFEST.boot`，读不了
+9. **MANIFEST 解析过窄（真机使用中暴露）**：只认空格列序且默认只找 `MANIFEST.boot`，读不了
    `scripts/collect-manifest.sh` 生成的 `output/<date>/MANIFEST`（` | ` 分隔）。已改为：
    ① 同时支持 `路径 | 目标 | SHA256 | 字节 | 时间` 与空格分隔，按 **basename** 匹配（`rootfs/xxx.img` 对
    `--flash linux=…/xxx.img` 生效）；② 默认搜索 `MANIFEST` → `MANIFEST.boot` → `MANIFEST.*`，第一个命中即用；
@@ -135,7 +137,7 @@ python3 scripts/make-bootimg.py --kernel <kernel>/Image.gz \
 
 - 真实 `Image.gz` + 真实 DTB 的打包结果（当前为占位物）；`fastboot` 实际刷写；`boot_b` 引导到 `/sbin/init`；
   f2fs 挂载选项实际表现；`/sys/class/block` → `by-partlabel` 重建在真机的行为；`resize.f2fs` 在线扩容。
-- 本机无 fastboot、无设备：所有 fastboot 结论均来自 mock（`tests/test-flash-safety.sh`）。
+- 构建主机无 fastboot、无设备：所有 fastboot 结论均来自 mock（`tests/test-flash-safety.sh`）。
 
 ## 8. 过程中修掉的自身缺陷（均已回归）
 

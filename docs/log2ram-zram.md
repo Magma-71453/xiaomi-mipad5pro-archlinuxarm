@@ -4,7 +4,7 @@
 
 | 项目 | 配置 | 目的 |
 |---|---|---|
-| log2ram | `configs/rootfs/etc/log2ram.conf`，`SIZE=1G` | 现场原始 `/var/log` 约 409 MiB，留出增长余量 |
+| log2ram | `configs/rootfs/etc/log2ram.conf`，`SIZE=1G` | 配置时 `/var/log` 原文集约 409 MiB，留出增长余量 |
 | Journald | `SystemMaxUse=512M` | 日志上限小于 log2ram tmpfs 容量 |
 | log2ram 写回 | `USE_RSYNC=true`、`JOURNALD_AWARE=true`、`ZL2R=false` | rsync 回写并轮转 journald；独立 zram swap 由 generator 管理 |
 | zram swap | `10240` MiB、`lz4`、priority 100 | 提供 10 GiB 逻辑容量；容量按 MiB 表达 |
@@ -77,7 +77,7 @@ SystemMaxUse=512M
 
 ## 已知限制
 
-- log2ram 使用最多 1 GiB RAM；超过此容量可能导致启动/写入失败。调整日志量时应同时评估 `SIZE` 与 `SystemMaxUse`。现场启动时 log2ram unit 的峰值内存为约 725 MiB。
+- log2ram 使用最多 1 GiB RAM；超过此容量可能导致启动/写入失败。调整日志量时应同时评估 `SIZE` 与 `SystemMaxUse`。实测 log2ram unit 的峰值内存为约 725 MiB。
 - RAM 中尚未回写的日志可能在断电时丢失；daily timer 在 23:55 写回，正常停止服务也会写回。
 - 10 GiB 是 zram 的逻辑 swap 容量，不是预留 10 GiB 实体 RAM；实际 RAM 消耗随压缩数据增长。
 - 本版本 `zram-size` 使用 MiB 算术表达式，故 10 GiB 写作 `10240`；`10G` 不是有效的容量写法。重启验证尚未执行，当前确认的是服务 active/enabled 与运行时挂载、swap 状态。

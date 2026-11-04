@@ -7,9 +7,14 @@
   真正可抄的是平板整机 dotfiles（目前只找到 Lenovo Yoga Book 一例）＋ 通用外挂件（wvkbd / lisgd），
   而且必须按 0.18 的新键名改写，否则老配置会被**静默忽略**。
 
+> ⚠️ **本文 §5–§8 记录的是当时的 lisgd 方案，属历史演进。**
+> 当前实现**不使用 lisgd**：手势由本仓库的 `mango-touchd`（evdev 直接读触摸节点）接管，
+> `lisgd` 已从系统中移除（实机不存在该文件，也无包拥有它）。读本文时请注意区分
+> 「当时怎么做」与「现在怎么做」——`mango-touchd` 之前的这些条目只作调研留档。
+
 ---
 
-## 1. 本机实测基线（都是在这台机器上跑出来的）
+## 1. 本仓库测试设备实测基线（下表数值均来自该次采集，非通用前提）
 
 | 项目 | 实测值 | 证据 |
 |---|---|---|
@@ -23,7 +28,7 @@
 | 配置文件 | 只有 `/etc/mango/config.conf`（已直接修改，备份 `.bak-20261025`）；`~/.config/mango/` 仍不存在 | `ls` |
 | 现有配置合法性 | 118 个键全部是 0.18.3 的合法键（无静默失效） | 与 `src/config/option_defs.c` 全量比对 |
 | 字体 | 系统**零字体**（`fc-list` 为空，wvkbd 画出来全是豆腐块）→ 已装 Noto Sans CJK SC + Noto Sans Symbols2 到 `~/.local/share/fonts` | `fc-list` |
-| 现状缺口 | 仍无终端/启动器（`foot`、`rofi` 未装，`Alt+Return`/`Alt+space` 是空绑定）；OSK(wvkbd)、手势(lisgd)、截图(grim) 已就位 | `command -v` |
+| 现状缺口 | 仍无终端/启动器（`foot`、`rofi` 未装，`Alt+Return`/`Alt+space` 是空绑定）；OSK(wvkbd)、截图(grim) 已就位。手势当时用 lisgd，**现已由 `mango-touchd` 接管** | `command -v` |
 
 > 注意：`/etc/mango/config.conf` 里 `Alt+space → rofi`、`Alt+Return → foot` 指向的程序并不存在，
 > 是这份最小 rootfs 的遗留绑定，不是触摸问题。
@@ -50,7 +55,7 @@
 |---|---|---|
 | `touch_enable` | 总开关；关掉后 seat 不再通告 TOUCH 能力 | `1` |
 | `touch_enable_mouse_emulation` | 触摸落在**不接受 `wl_touch`** 的 surface 上时，合成为"左键按下/移动/抬起"（只由第一个触点模拟指针） | 平板上建议 `1` |
-| `device_rule=name:<设备名>,monitor:<输出>` | 把触摸/笔钉到某个输出；不设则跟随"当前焦点屏" | 本机 `…,monitor:DSI-1` |
+| `device_rule=name:<设备名>,monitor:<输出>` | 把触摸/笔钉到某个输出；不设则跟随"当前焦点屏" | 本仓库测试设备为 `…,monitor:DSI-1` |
 | `gesturebind=MOD,方向,3\|4指,动作` | **仅触摸板**（wlroots 只对触摸板产生 swipe 事件） | 保持现状 |
 | `gesture_live` / `gesture_swipe_distance` / `gesture_swipe_cancel_ratio` / `gesture_swipe_min_speed_to_force` / `swipe_min_threshold` | 手势跟随、翻页距离、取消比例、快速甩动阈值 | 按手感微调 |
 
@@ -80,37 +85,44 @@
 
 ## 5. 触屏"手感"其实靠这三件外挂
 
-| 需求 | 方案 | 在本机的可行性 |
+| 需求 | 方案 | 在本仓库测试设备上的可行性 |
 |---|---|---|
 | 屏幕键盘 | **wvkbd**（wlroots virtual-keyboard；`SIGUSR1` 隐藏 / `SIGUSR2` 显示 / `SIGRTMIN` 切换；`--auto` 需要 `zwp_input_method_v2`） | 协议齐备（探针已确认），但 ALARM 没打包，需自己编（cairo/pango/xkbcommon/wayland-client，设备上 gcc + pkg-config 都在） |
 | 屏幕键盘（备选） | **squeekboard**（`extra/squeekboard 1.43.1`，可直接 pacman 装） | 需实测：它依赖 input-method 协议，mango 有 v2，但没有官方验证记录 |
-| 触屏手势 | **lisgd**（libinput **合成**手势守护，专为触摸屏设计；不 grab、`send_events=ENABLED`，所以单击仍能到应用）→ 回调里 `mmsg dispatch` 驱动 mango | 可选；需编译（无 AUR 包） |
-| 自动旋转 | `iio-sensor-proxy` + `wlr-randr --output DSI-1 --transform 90` | 仓库都有，本机有 3 个 iio 设备 |
+| 触屏手势 | ~~**lisgd**（libinput **合成**手势守护，专为触摸屏设计；不 grab、`send_events=ENABLED`，所以单击仍能到应用）→ 回调里 `mmsg dispatch` 驱动 mango~~ —— **历史方案，已被 `mango-touchd` 取代**；现行做法是自己起一个 evdev 守护读触摸节点、判定手势后 `mango-dispatch` | 当时为可选、需编译（无 AUR 包）；现不再使用 lisgd |
+| 自动旋转 | `iio-sensor-proxy` + `wlr-randr --output DSI-1 --transform 90` | 仓库都有，本仓库测试设备上有 3 个 iio 设备 |
 | 缩放 | `monitor_rule=…,scale:2` 或 `wlr-randr --output DSI-1 --scale 2` | 现在 `scale=1`，2560 高在 11 吋上字明显偏小，这是"触摸友好"收益最大的一项 |
 
 `mmsg` 从会话外调用时必须带签名（socket 路径），否则报 `MANGO_INSTANCE_SIGNATURE is not set`：
 
 ```sh
-export XDG_RUNTIME_DIR=/home/magma/.xdg
-MANGO_INSTANCE_SIGNATURE=/home/magma/.xdg/mango-678.sock mmsg dispatch viewnext_have_client
+export XDG_RUNTIME_DIR=/run/user/1000            # mango 进程实际使用的目录
+MANGO_INSTANCE_SIGNATURE=/run/user/1000/mango-<pid>.sock mmsg dispatch viewnext_have_client
 ```
+
+> 实机 mango 进程的 `XDG_RUNTIME_DIR` 是 **`/run/user/1000`**（logind 标准路径）。
+> `~/.xdg` 是更早版本留下的**历史回退路径**，目录可能还在、里面还有上一轮会话的陈旧 socket——
+> 从那里扫 `mango-*.sock` 会连到已经死掉的实例。取当前 socket 用：
+> `ls /run/user/1000/mango-*.sock`（文件名里的 PID 每次启动都不同，不要写死）。
 
 ---
 
-## 6. 已落地（2026-10-25，直接写系统配置，不用 overlay）
+## 6. 当次落地内容（2026-10-25，直接写系统配置，不用 overlay）
 
-用户明确要求"不要 overlay、直接安装"，所以全部改的是系统真身：
+需求是"不要 overlay、直接安装"，所以全部改的是系统真身。
+下表是**当次**落地的文件；标「历史方案」的条目**已被 `mango-touchd` 取代**，不要在现网重装：
 
 | 路径 | 内容 |
 |---|---|
 | `/etc/mango/config.conf` | 在原 304 行后追加 touch / scale / OSK / gesture 段；备份 `/etc/mango/config.conf.bak-20261025` |
-| `/usr/local/bin/wvkbd-mobintl` | 屏幕键盘（设备本机编译，1.0 MB） |
-| `/usr/local/bin/lisgd` | 触屏手势守护（设备本机编译，75 KB；**不 grab 设备**，单击仍进应用） |
-| `/usr/local/bin/grim` | 截图工具（设备本机编译，用于验收） |
-| `/usr/local/bin/mango-dispatch` | 自动找 mango socket 的 mmsg 包装（lisgd 回调、SSH 都能直接用） |
+| `/usr/local/bin/wvkbd-mobintl` | 屏幕键盘（在设备上编译，1.0 MB） |
+| ~~`/usr/local/bin/lisgd`~~ | **历史方案**：当时的触屏手势守护（在设备上编译，75 KB；不 grab 设备，单击仍进应用）。**实机已不存在该文件，也无包拥有它** |
+| `/usr/local/bin/grim` | 截图工具（在设备上编译，用于验收） |
+| `/usr/local/bin/mango-dispatch` | 自动找 mango socket 的 mmsg 包装（SSH 与守护进程都能直接用） |
 | `/usr/local/bin/mango-osk-toggle` | wvkbd 显隐切换（`SIGRTMIN`），给 `SUPER+k` 和四指下滑用 |
-| `/usr/local/bin/mango-touch-gestures` | 按设备名解析触摸 event 节点 → 启 lisgd 并绑定手势，由 `exec_once` 启动 |
-| `~/.local/share/fonts/NotoSansCJKsc-Regular.otf`、`NotoSansSymbols2-Regular.ttf` | 系统原本**一个字体都没有**（wvkbd 全是豆腐块），这两个覆盖中英文 + 键盘符号 |
+| ~~`/usr/local/bin/mango-touch-gestures`~~ | **历史方案**：按设备名解析触摸 event 节点 → 启 lisgd 并绑定手势。现由 `mango-touchd` 直接接管，该文件已不在仓库与设备上 |
+| `/usr/local/bin/mango-touchd` | **现行方案**：evdev 读触摸节点、自己判手势，3 指左右切 tag / 3 指上滑切 dock / 4 指上下 overview；由 `mango-shell-start` 启动 |
+| `~/.local/share/fonts/NotoSansCJKsc-Regular.otf`、`NotoSansSymbols2-Regular.ttf` | 当时系统里**一个字体都没有**（wvkbd 全是豆腐块），这两个覆盖中英文 + 键盘符号 |
 
 配置增量（0.18.3 合法键，`mango -p` rc=0）：
 
@@ -121,8 +133,12 @@ device_rule=name:NVTCapacitiveTouchScreen,monitor:DSI-1
 device_rule=name:NVTCapacitivePen,monitor:DSI-1
 monitor_rule=name:DSI-1,width:1600,height:2560,refresh:120,x:0,y:0,scale:2
 bind=SUPER,k,spawn,/usr/local/bin/mango-osk-toggle
-exec_once=/usr/local/bin/mango-touch-gestures
+exec_once=/usr/local/bin/mango-shell-start
 ```
+
+> `exec_once` 现在指向 `mango-shell-start`（它再拉起 `mango-touchd` / dock / osd 等）。
+> 上面这份是当次调研的最小增量；现行完整配置见 `configs/rootfs/etc/mango/config.conf`
+> （还带 `rr:3` 横屏）。
 
 - `refresh:120` 是 `modetest -c` 读到的真实模式（1600x2560@120，preferred）；`monitor_rule` 的
   width/height/refresh 必须同时给，否则报 `Monitor rule must set width, height and refresh together`。
@@ -131,17 +147,17 @@ exec_once=/usr/local/bin/mango-touch-gestures
 - 手势：3 指左右滑 = 上/下一个有窗口的 tag；3 指上滑 / 4 指上滑 = overview；4 指下滑 = 屏幕键盘。
 - wvkbd 参数 `-H 520 -L 360 --fn "Noto Sans CJK SC 22"`：竖屏键盘高 520 逻辑像素（屏幕 40%），横屏 360。
 
-**验收证据（全部实机跑出来）**
+**验收证据（当次实机跑出来的结果）**
 
 | 检查 | 结果 |
 |---|---|
 | `mango -p -c /etc/mango/config.conf` | `rc=0` |
 | `mmsg get all-monitors` | `scale=2 logical=800x1280` |
 | `mmsg get all-layers`（开键盘后） | `{"layer":"overlay","name":"wvkbd"}` |
-| uinput 注入 3 指滑动 → lisgd | `Cfg (3/2) <=> Evt (3/2)` + 命令执行（PASS） |
+| uinput 注入 3 指滑动 → lisgd（**当次**） | `Cfg (3/2) <=> Evt (3/2)` + 命令执行（PASS）。注：现在注入的 uinput 节点不会被 `mango-touchd` 打开，验证方式见 §8 |
 | uinput 点屏幕键盘 `q` / 空格 | wvkbd 日志 `get key: +39+216` → `q`、`release key 16`；空格 `release key 57` |
 | grim 截图 | 键盘全键位正常（含 ⌫、⌨），无豆腐块 —— 见 `mango-touch-osk.png` |
-| 重启会话后 | `exec_once` 自动拉起 lisgd（`-d /dev/input/event4`），`scale=2` 保持 |
+| 重启会话后 | `exec_once` 自动拉起触摸守护，`scale=2` 保持（当次是 lisgd，现在是 `mango-touchd`） |
 
 **调参与回滚**
 
@@ -152,13 +168,14 @@ sudo sed -i 's/-H 520 -L 360/-H 440 -L 320/' /usr/local/bin/mango-osk-toggle
 # 缩放：1.5 更宽松，2 最锐利（改完重启会话）
 sudo sed -i 's/scale:2/scale:1.5/' /etc/mango/config.conf
 
-# 手势手感：mango-touch-gestures 里 -t 250（像素阈值） -m 800（毫秒超时）
+# 手势手感：mango-touchd 里的 SWIPE_MIN（逻辑像素阈值，当前 120）
 
 # 横屏使用（当前是竖屏 800x1280）：monitor_rule 末尾加 rr:90 或 rr:270
 
 # 回滚
 sudo cp /etc/mango/config.conf.bak-20261025 /etc/mango/config.conf
-sudo rm -f /usr/local/bin/mango-dispatch /usr/local/bin/mango-osk-toggle /usr/local/bin/mango-touch-gestures
+sudo rm -f /usr/local/bin/mango-dispatch /usr/local/bin/mango-osk-toggle \
+           /usr/local/bin/mango-touchd
 sudo systemctl restart getty@tty1
 ```
 
@@ -173,7 +190,8 @@ sudo systemctl restart getty@tty1
    真正的错误长这样：`[ERROR] Unknown keyword: bordr_px` + rc=1。
 4. **重复绑定即冲突**：叠加配置时，再写一遍已有的 4 指 `gesturebind` 或 `SUPER+btn_left` 会让整份配置 rc=1
    （本次安装的增量段刻意避开了已有绑定）。
-5. **触摸屏不走 `gesturebind`**：wlroots 只对触摸板发 swipe 事件；触屏手势必须外挂 lisgd 之类。
+5. **触摸屏不走 `gesturebind`**：wlroots 只对触摸板发 swipe 事件；触屏手势必须外挂守护进程。
+   现行用的是 `mango-touchd`（读 evdev），当时的 lisgd 是同一思路的外挂实现，已废弃。
 6. **点未聚焦窗口不改焦点**（#1514）：目前只能靠键盘/tag 切换，或对走鼠标模拟的窗口（触摸即"点击"）间接聚焦。
 7. **多屏 + 分数缩放**下触摸坐标可能偏（#1274）；单屏 + `scale` 整数倍最稳。
 
@@ -181,35 +199,52 @@ sudo systemctl restart getty@tty1
 
 ## 8. 复现与验证
 
+`XDG_RUNTIME_DIR` 用 mango 进程真正的那个（`/run/user/1000`），socket 名里的 PID 每次不同，
+不要写死；`~/.xdg` 只作历史回退。
+
 ```sh
 # 1) 配置语法 + 绑定冲突（唯一可信的离线检查）
-mango -p -c ~/.config/mango/config.conf ; echo rc=$?
+mango -p -c /etc/mango/config.conf ; echo rc=$?
 
-# 2) 运行时状态
-export XDG_RUNTIME_DIR=/home/magma/.xdg
-S=$(ls ~/.xdg/mango-*.sock | while read s; do MANGO_INSTANCE_SIGNATURE=$s mmsg get all-monitors >/dev/null 2>&1 && echo $s && break; done)
+# 2) 运行时状态：先找出当前会话的 socket，再带签名调用
+export XDG_RUNTIME_DIR=/run/user/1000
+S=$(ls "$XDG_RUNTIME_DIR"/mango-*.sock 2>/dev/null | while read -r s; do
+      MANGO_INSTANCE_SIGNATURE=$s mmsg get all-monitors >/dev/null 2>&1 && echo "$s" && break
+    done)
 MANGO_INSTANCE_SIGNATURE=$S mmsg get all-monitors
 MANGO_INSTANCE_SIGNATURE=$S mmsg get all-devices
 
-# 3) seat 能力 / 协议在场（本次调研用的探针，源码 .build/research/touch/probe.c）
+# 3) 手势守护是否在跑
+pgrep -af mango-touchd
+
+# 4) seat 能力 / 协议在场（本次调研用的探针，源码 .build/research/touch/probe.c）
 gcc -O0 probe.c -o probe $(pkg-config --cflags --libs wayland-client)
-XDG_RUNTIME_DIR=/home/magma/.xdg WAYLAND_DISPLAY=wayland-0 ./probe
+XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 ./probe
 # → SEAT_CAPS pointer=1 keyboard=1 touch=1
 # → zwlr_layer_shell_v1 / zwp_virtual_keyboard_manager_v1 / zwp_input_method_manager_v2
 
-# 4) 回滚
+# 5) 回滚
 rm ~/.config/mango/config.conf      # 回到 /etc/mango/config.conf
 mmsg dispatch reload_config         # 或 SUPER+r
 ```
 
-本次安装的验收记录（同一轮里全部通过）：
+**怎么验 `mango-touchd` 的手势判定**（注入的 uinput 节点不会被它打开，得手动指过去）：
+
+```sh
+# root 运行，eventN 换成 uinput 注入出来的节点（root:root 600）
+sudo XDG_RUNTIME_DIR=/tmp/rt mango-touchd /dev/input/eventN
+```
+
+其中 `/tmp/rt` 只需含 `wayland-*` 与一个假 `mango-99999.sock`，避免真的 dispatch 到桌面。
+
+当次安装的验收记录（同一次安装里全部通过；手势项用的是当时的 lisgd）：
 
 - `mango -p -c /etc/mango/config.conf` → `rc=0`
 - `mmsg get all-monitors` → `scale=2 logical=800x1280`
 - `mmsg get all-layers` → 开键盘后 `{"layer":"overlay","name":"wvkbd"}`
 - uinput 三指滑动 → lisgd `Cfg (3/2) <=> Evt (3/2)`，回调命令执行成功（marker 文件生成）
 - uinput 点击屏幕键盘 → wvkbd 日志 `get key: +39+216` → `q` / `release key 16`；空格 `release key 57`
-- 重启 `getty@tty1` 后：`exec_once` 自动拉起 lisgd，缩放仍为 2，键盘可切换
+- 重启 `getty@tty1` 后：`exec_once` 自动拉起触摸守护，缩放仍为 2，键盘可切换
 
 ---
 
@@ -225,5 +260,5 @@ mmsg dispatch reload_config         # 或 SUPER+r
 - issue #1274（触摸坐标偏移）：<https://github.com/mangowm/mango/issues/1274>
 - Yoga Book 触屏平板全套配置：<https://github.com/andrespalumbo311/yogabook-linux-settings>
 - wvkbd：<https://github.com/jjsullivan5196/wvkbd>
-- lisgd：<https://git.sr.ht/~mil/lisgd>（镜像 <https://github.com/jjsullivan5196/lisgd>）
+- lisgd（**历史方案，现未使用**）：<https://git.sr.ht/~mil/lisgd>（镜像 <https://github.com/jjsullivan5196/lisgd>）
 - ArchWiki MangoWM（无触摸章节）：<https://wiki.archlinux.org/title/MangoWM>

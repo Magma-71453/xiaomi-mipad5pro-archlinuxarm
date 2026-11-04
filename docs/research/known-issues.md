@@ -121,7 +121,7 @@
   https://gitlab.postmarketos.org/jianhua/sm8250-mainline/-/blob/6.13.0/drivers/power/supply/bq25970_charger.c#L2086
 - **影响分级**：高频（充电体验）。
 - **7.2.0 是否仍有**：**UNVERIFIED**。注意：该 30s 硬编码位于 jianhua 的 **sm8250-mainline 分支**，
-  与本次要构建的 sm8250 内核仓（project 543，默认分支 7.2.0-dev）是否同源同码，本轮**未逐行核对**。
+  与本次要构建的 sm8250 内核仓（project 543，默认分支 7.2.0-dev）是否同源同码，尚未逐行核对。
 - 相关：Battery = Partial（S1）。
 
 ### KI-12 USB-C 角色切换 / OTG
@@ -256,7 +256,7 @@ tag 头提交：3c5440e9（2026-10-02，"Merge branch '7.2.0' into '7.2.0-dev'"�
 
 ---
 
-## 14. 供 bug.md 合并的条目（dispatcher 可直接摘用）
+## 14. 供 bug.md 合并的条目
 
 - KI-N1 **[开放]** 立体声失效（8 扬声器全左声道，CS35L41 RX slot 未暴露）— 来源 S1；7.2.0 未证修复。
 - KI-N2 **[开放]** 录音不工作 — 来源 S1；依赖 hexagonrpcd-sdsp 用户态。

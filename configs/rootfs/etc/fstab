@@ -1,8 +1,8 @@
 # /etc/fstab — xiaomi-elish (Arch Linux ARM, aarch64)
 # Root filesystem is f2fs on the GPT partition whose partition label is "linux"
-# (/dev/sda36, ~195 GiB; the image is built at 16 GiB and grown on first boot
-# with resize.f2fs).  The kernel and initramfs are NOT in this rootfs: they live
-# on the boot_b partition.
+# (sized by whoever created the partition; the image is built at 16 GiB and
+# grown to the partition size on first boot with resize.f2fs).  The kernel and
+# initramfs are NOT in this rootfs: they live on the boot_b partition.
 #
 # Every option below exists in Documentation/filesystems/f2fs.rst of the
 # sm8250 kernel tree (.build/kbuild/src/linux-sm8250-*/):

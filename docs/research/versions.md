@@ -124,7 +124,7 @@
 3. 若后续一定要回到 0.19（例如某个补丁只对 0.19 生效），回退方式是明确的：
    `wlroots0.19` 0.19.3（AUR，orphan）+ `scenefx0.4` 0.4.1（AUR，OOD）+ MangoWM tag `0.14.4`，三者一起自建。
 
-> 与 `docs/plan.md` S3 的差异（供 dispatcher 决策）：S3 验收写的是 "wlroots 0.19.2 / scenefx 0.4.1"，
+> 与 `docs/plan.md` S3 的差异（供决策参考）：S3 验收写的是 "wlroots 0.19.2 / scenefx 0.4.1"，
 > 该组合需要**三个自建包**且上游不再维护；改成 "wlroots0.20 0.20.2 + scenefx 0.5 + MangoWM 0.18.3" 后**零自建**。
 
 ---
@@ -140,7 +140,7 @@
 | x86-64 RootFS | **必须**。用 `FEXRootFSFetcher` 下载，或自行生成 | `Readme.md` 第 21-22 行；`https://wiki.fex-emu.com/index.php/Development:Setting_up_RootFS` |
 | binfmt_misc | 需要（`binfmt-support` / `ninja binfmt_misc`），用于透明执行 x86 ELF | FEX wiki `...Setting_up_FEX&action=raw` 第 12 行、第 94-106 行 |
 | Wine/Proton | 跑 Windows 游戏需要 Wine + **ARM64EC** 通路，对应包 = AUR `fex-emu-wine-git`（提供 FEX 的 ARM64EC thunk DLL：`xtajit64.dll`/`libwow64fex.dll`） | AUR `https://aur.archlinux.org/rpc/v5/info?arg[]=fex-emu-wine-git`；PKGBUILD `arch=('aarch64')` |
-| Proton 版本 | x86_64 Proton 通过 FEX 跑可行；官方推荐走 Wine ARM64EC。**具体 Proton 版本对 FEX 的兼容性：UNVERIFIED**（本轮未找到一手矩阵） | — |
+| Proton 版本 | x86_64 Proton 通过 FEX 跑可行；官方推荐走 Wine ARM64EC。**具体 Proton 版本对 FEX 的兼容性：UNVERIFIED**（暂未找到一手矩阵） | — |
 | 内核页大小 | FEX 文档未在抓到的段落中给出硬性 4K 页要求 → **UNVERIFIED**（需真机验证） | — |
 
 ### 5.2 构建依赖与构建规模
@@ -157,10 +157,10 @@ FEXConfig GUI 另需 qtdeclarative6 系列。
       -DUSE_LINKER=lld -DENABLE_LTO=True -DBUILD_TESTING=False -DENABLE_ASSERTIONS=False -G Ninja ..
     ninja
 
-规模实测（本轮实际 clone 统计，`git clone --depth 1`，HEAD `9eb5d92`，2026-10-24）：
+规模实测（实测 clone 统计，`git clone --depth 1`，HEAD `9eb5d92`，2026-10-24）：
 - tracked 文件 **3652** 个，其中 `*.cpp` **318** 个（`FEXCore/**/*.cpp` 86 个），工作树 37 MB；
 - 官方推荐 `ENABLE_LTO=True` + `lld`，属典型重编译负载；
-- **构建时长：UNVERIFIED**（本轮未实测）。按 318 个 C++ TU + ThinLTO 在 16 核上的经验区间，粗估 20–60 分钟
+- **构建时长：UNVERIFIED**（未实测）。按 318 个 C++ TU + ThinLTO 在 16 核上的经验区间，粗估 20–60 分钟
   （估算，不是实测，禁止写进 bug.md 当事实）。
 
 ### 5.3 是否有预编译 aarch64 二进制？
@@ -190,7 +190,7 @@ FEXConfig GUI 另需 qtdeclarative6 系列。
 - U1 FEX 在 elish（SM8250，4K/16K 页）上的内核页大小硬性要求 → 未找到一手文档。
 - U2 Proton 具体版本 × FEX 的兼容矩阵 → 未找到一手证据（官方只提供 Wine ARM64EC 通路）。
 - U3 FEX 在 16 核 x86_64 宿主上交叉构建的实际时长 → 未实测，仅为估算。
-- U4 MangoWM 0.18.3 在 aarch64 + ALARM `wlroots0.20`/`scenefx` 上能否一次通过编译 → 未实际构建（本轮只读调研）。
+- U4 MangoWM 0.18.3 在 aarch64 + ALARM `wlroots0.20`/`scenefx` 上能否一次通过编译 → 未实际构建（只读调研）。
 - （原 U5「meson/ninja 是否在库内」已在复核中关闭：`meson` 1.12.1-2、`ninja` 1.13.2-3、`pkgconf` 3.0.10-1、`python` 3.14.8-1 均在 ALARM 仓库，见 §2 表。）
 
 ---
@@ -222,7 +222,7 @@ wlroots >= 0.20.0 且 scenefx >= 0.5.0（pkg-config 模块名 wlroots-0.20 / sce
 
 **后果**：若要维持该约束，必须同时自建 wlroots 0.19.3 与 scenefx 0.4.1（ALARM 仓库没有 0.19 线，见本文件 §2），
 并把 MangoWM 钉在 0.14.4（2026-06-16）这个上游已不再修复的 tag 上。这与"零自建"目标冲突。
-**处置（已落定）**：dispatcher 已记录用户 2026-10-24 裁决 = `docs/decisions.md` **D-008**——采用 MangoWM 0.18.3 + ALARM wlroots0.20/scenefx 0.5（零自建），并把任务书的 "wlroots 0.19.2 / scenefx 0.4.1" 视为对当时上游状态的描述而非永久锁版。本文件保留原始证据以供复核。
+**处置（已落定）**：已记录 2026-10-24 的裁决 = `docs/decisions.md` **D-008**——采用 MangoWM 0.18.3 + ALARM wlroots0.20/scenefx 0.5（零自建），并把任务书的 "wlroots 0.19.2 / scenefx 0.4.1" 视为对当时上游状态的描述而非永久锁版。本文件保留原始证据以供复核。
 
 ---
 
@@ -237,7 +237,7 @@ wlroots >= 0.20.0 且 scenefx >= 0.5.0（pkg-config 模块名 wlroots-0.20 / sce
   （git / cmake / clang / lld / ninja / python）；FEX 核心本体在 AUR 中**不存在**。
 - **路径 B——等上游提供 aarch64 二进制**：现状不可用（FEX-2608/2609/2610 的 Release assets 均为 0 个；
   官方一键安装只覆盖 Ubuntu PPA）。需持续跟踪。
-- **路径 C——在 x86_64 宿主交叉构建**：需要 aarch64 交叉工具链 + x86 thunk 双重交叉，本轮未验证可行性（UNVERIFIED）。
+- **路径 C——在 x86_64 宿主交叉构建**：需要 aarch64 交叉工具链 + x86 thunk 双重交叉，尚未验证可行性（UNVERIFIED）。
 - 三条路径的共同前置：x86-64 RootFS（FEXRootFSFetcher 下载，运行期资产，数 GB 量级）与 binfmt_misc 注册。
 
 **结论重申**：S1 镜像不含 FEX；首次开机后按路径 A 在设备上构建/安装，或按路径 B 等二进制。

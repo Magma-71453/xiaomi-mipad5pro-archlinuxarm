@@ -50,8 +50,8 @@ LOG_DIR="${LOG_DIR:-${BUILD_DIR}/logs}"
 OUT_DIR="${OUT_DIR:-${REPO_DIR}/output/20261024/mango}"
 
 # ---------------------------------------------------------- 设备与远端路径 --
-DEV_HOST="${DEV_HOST:-<device-ip>}"
-DEV_USER="${DEV_USER:-elish}"
+DEV_HOST="${DEV_HOST:?set DEV_HOST to the device IP, e.g. 192.0.2.10}"
+DEV_USER="${DEV_USER:?set DEV_USER to the device login user}"
 DEV_SSH_KEY="${DEV_SSH_KEY:-${HOME}/.ssh/id_ed25519}"
 DEV_TARGET="${DEV_USER}@${DEV_HOST}"
 DEV_JOBS="${DEV_JOBS:-8}"

@@ -38,7 +38,7 @@ mkdir -p "$ROOTFS/etc" && cp -a stage/etc/. "$ROOTFS/etc/"     # /etc/mango 必�
 ```
 
 > 关键：`stage/etc/mango/` **不要**放进 `/usr/etc/`。构建时 prefix 是设备上的
-> `$HOME/elish-build/stage`，而 `sysconfdir` 被 meson.build 归一化成 `/etc`，
+> `$DEV_BASE/stage`，而 `sysconfdir` 被 meson.build 归一化成 `/etc`，
 > 所以运行期只从 **/etc/mango/** 读配置。
 
 ## 2. 运行时依赖包清单（rootfs 要能装上）
@@ -88,10 +88,13 @@ file stage/bin/mango
 
 | 库 | pkg-config --modversion | ldd 实际指向（设备 sysroot） |
 |---|---|---|
-| wlroots-0.20 | 0.20.2 | $HOME/<build-dir>/sysroot/usr/lib/libwlroots-0.20.so |
-| scenefx-0.5 | 0.5.0 | $HOME/<build-dir>/sysroot/usr/lib/libscenefx-0.5.so |
-| libcjson | 1.7.19 | .../sysroot/usr/lib/libcjson.so.1 |
-| libliftoff | 0.5.0 | .../sysroot/usr/lib/libliftoff.so.0 |
+| wlroots-0.20 | 0.20.2 | `$DEV_BASE/sysroot/usr/lib/libwlroots-0.20.so` |
+| scenefx-0.5 | 0.5.0 | `$DEV_BASE/sysroot/usr/lib/libscenefx-0.5.so` |
+| libcjson | 1.7.19 | `$DEV_BASE/sysroot/usr/lib/libcjson.so.1` |
+| libliftoff | 0.5.0 | `$DEV_BASE/sysroot/usr/lib/libliftoff.so.0` |
+
+> `$DEV_BASE` 是设备上的构建工作目录，默认 `$HOME/elish-build`，可用环境变量覆盖（见 §4）。
+> 上面的路径只说明「ldd 用的是 sysroot 里的库，不是系统库」，具体目录随 `DEV_BASE` 变化。
 
 构建质量：147 个 target，**error 0 / warning 0**；首次全量 8s、冷重编 20s（-j8）；
 两次构建 `bin/mango` sha256 一致：`18e38c750e001dcb9fe6a0ec0a652c96706901e72333740b350b02f00ec27894`。
@@ -112,8 +115,8 @@ bash elish-archlinux/scripts/build-mango-on-device.sh --clean    # 连远端 `/e
 
 | 变量 | 默认 |
 |---|---|
-| DEV_HOST / DEV_USER / DEV_SSH_KEY | <device-ip> / elish / `~/.ssh/id_ed25519 |
-| DEV_BASE | $HOME/<build-dir>（唯一允许活动的设备路径） |
+| DEV_HOST / DEV_USER / DEV_SSH_KEY | `<device-ip>` / `<user>` / `<ssh-key>`（脚本里带一个构建机默认值，换机器必须显式覆盖） |
+| DEV_BASE | `$HOME/elish-build`（唯一允许活动的设备路径） |
 | DEV_JOBS / BUILD_TYPE | 8 / release |
 | MANGO_VER / MANGO_URL / MANGO_SHA256 | 0.18.3 / codeload / 9b9c66c5… |
 | MESON_WHEEL_VER / MESON_WHEEL_URL / MESON_WHEEL_SHA256 | 1.12.1 / pypi files / 930bc754… |
@@ -126,56 +129,66 @@ bash elish-archlinux/scripts/build-mango-on-device.sh --clean    # 连远端 `/e
 - 二进制未 strip（3.35 MB；上游 meson.build 无条件加 `-g`）。若空间敏感可 `strip --strip-unneeded`，
   但那会改 sha256，需要重算 MANIFEST。
 - 设备上那 5 个依赖包以 sysroot 形式存在，**rootfs 必须走 pacman 正常安装**（§2），
-  不要把 `/elish-build/sysroot` 拷进 rootfs。
+  不要把 `${DEV_BASE}/sysroot` 拷进 rootfs。
 - rootfs 侧尚未验证 seatd/权限/XDG_RUNTIME_DIR 是否齐备。
 
 ## 6. 触摸 / 平板能力（2026-10-25 装入并验收）
 
-mango 0.16.0 起有原生触摸，但只有两个开关 + 设备级映射；触屏手势必须外挂。本次直接改系统配置
+mango 0.16.0 起有原生触摸，但只有两个开关 + 设备级映射；触屏手势必须外挂。当时改为直接写系统配置
 （不用 overlay），明细与调研结论见 [`docs/research/mango-touch.md`](research/mango-touch.md)。
+
+> ⚠️ 触屏手势的守护进程**现在由 `mango-touchd` 承担**（evdev 直接读触摸节点，见
+> `configs/rootfs/usr/local/bin/mango-touchd`）。早期版本用过外挂 `lisgd`，**已废弃并从系统中移除**；
+> 下文凡标「历史方案」的行只作演进记录，不要照着重装。
 
 | 位置 | 内容 | 来源 |
 |---|---|---|
-| `/etc/mango/config.conf` | 追加 touch / scale / OSK / gesture 段（原文件备份 `.bak-20261025`） | 本仓库 `configs/rootfs/etc/mango/config.conf` |
+| `/etc/mango/config.conf` | touch / scale / OSK / gesture 段（原文件备份 `.bak-20261025`） | 本仓库 `configs/rootfs/etc/mango/config.conf` |
 | `/usr/local/bin/mango-dispatch` | 自动找 mango socket 的 mmsg 包装 | `configs/rootfs/usr/local/bin/` |
 | `/usr/local/bin/mango-osk-toggle` | wvkbd 显隐切换（`SIGRTMIN`），`SUPER+k` / 四指下滑 | 同上 |
-| `/usr/local/bin/mango-touch-gestures` | 解析触摸 event 节点 → 启 lisgd，`exec_once` 自启 | 同上 |
-| `/usr/local/bin/wvkbd-mobintl` | 屏幕键盘，设备本机 `make wvkbd-mobintl` | 上游 jjsullivan5196/wvkbd（**未入库，需重编**） |
-| `/usr/local/bin/lisgd` | 触屏手势守护，设备本机 `make` | 上游 jjsullivan5196/lisgd（**未入库，需重编**） |
-| `/usr/local/bin/grim` | 截图（验收用），设备本机 meson 构建 | 上游 emersion/grim（**未入库，需重编**） |
+| `/usr/local/bin/mango-touchd` | 触摸手势守护（evdev）：3 指左右切 tag、3 指上滑 dock、4 指上下 overview；由 `mango-shell-start` 启动 | 同上 |
+| `/usr/local/bin/wvkbd-mobintl` | 屏幕键盘，在设备上 `make wvkbd-mobintl` | 上游 jjsullivan5196/wvkbd（**未入库，需重编**） |
+| `/usr/local/bin/grim` | 截图（验收用），在设备上 meson 构建 | 上游 emersion/grim（**未入库，需重编**） |
+| ~~`/usr/local/bin/lisgd`~~ | **历史方案，已被 `mango-touchd` 取代**：当时的 lisgd 手势守护（在设备上编译，75 KB）已不在设备上，无包拥有该文件 | 上游 jjsullivan5196/lisgd（已不再使用） |
+| ~~`/usr/local/bin/mango-touch-gestures`~~ | **历史方案**：按设备名解析触摸 event 节点 → 启 lisgd，`exec_once` 启动。现由 `mango-touchd` 直接接管，该文件已不在仓库与设备上 | 已删除 |
 | `~/.local/share/fonts/NotoSansCJKsc-Regular.otf`、`NotoSansSymbols2-Regular.ttf` | 系统原本零字体，OSK 全是豆腐块 | notofonts（**未入库**） |
 
-关键增量配置：
+关键增量配置（与 `configs/rootfs/etc/mango/config.conf` 一致，`rr:3` 为横屏；只写 touch 时为 `scale=2` 竖屏）：
 
 ```ini
 touch_enable=1
 touch_enable_mouse_emulation=1
 device_rule=name:NVTCapacitiveTouchScreen,monitor:DSI-1
 device_rule=name:NVTCapacitivePen,monitor:DSI-1
-monitor_rule=name:DSI-1,width:1600,height:2560,refresh:120,x:0,y:0,scale:2
+monitor_rule=name:DSI-1,width:1600,height:2560,refresh:120,x:0,y:0,scale:2,rr:3
 bind=SUPER,k,spawn,/usr/local/bin/mango-osk-toggle
-exec_once=/usr/local/bin/mango-touch-gestures
+exec_once=/usr/local/bin/mango-shell-start
 ```
 
-- 缩放：`scale=2` → 逻辑 800x1280（竖屏）。`mango` 未实现 `zwlr_output_manager_v1`，`wlr-randr` 不可用，
-  只能用 `monitor_rule`；width/height/refresh 必须同时给（`modetest -c` 读到 1600x2560@120 preferred）。
-- 手势：3 指左右滑切 tag、3/4 指上滑 overview、4 指下滑切键盘；lisgd 不 grab，单击仍进应用。
+- 缩放：`scale=2` → 逻辑 800x1280（竖屏）；再加 `rr:3`（270°）→ 1280x800 横屏。`mango` 未实现
+  `zwlr_output_manager_v1`，`wlr-randr` 不可用，只能用 `monitor_rule`；width/height/refresh 必须同时给
+  （`modetest -c` 读到 1600x2560@120 preferred）。
+- 手势：3 指左右滑切 tag、3 指上滑切 dock、4 指上/下滑进/出 overview。`mango-touchd` 只读触摸节点、
+  自己判手势，不 grab 桌面输入，单击仍进应用。
 - 屏幕键盘：wvkbd `-H 520 -L 360 --fn "Noto Sans CJK SC 22"`；竖屏高 520 逻辑像素（40% 屏高）。
 
 重建触摸外挂件（设备上）：
 
 ```sh
-cd ~/elish-build/src
+cd "${DEV_BASE}/src"    # DEV_BASE 默认 $HOME/elish-build
 git clone --depth 1 https://github.com/jjsullivan5196/wvkbd && (cd wvkbd && make wvkbd-mobintl)
-git clone --depth 1 https://github.com/jjsullivan5196/lisgd && (cd lisgd && make)
-sudo install -m755 wvkbd/wvkbd-mobintl lisgd/lisgd /usr/local/bin/
+sudo install -m755 wvkbd/wvkbd-mobintl /usr/local/bin/
 ```
 
-验收（实机全过）：`mango -p` rc=0；`mmsg get all-monitors` scale=2 / 800x1280；`mmsg get all-layers`
-有 `wvkbd` overlay；uinput 注入三指滑动触发 lisgd 回调；uinput 点键盘 `q`/空格，wvkbd 输出 keycode 16/57；
-重启 `getty@tty1` 后 `exec_once` 自动拉起 lisgd。截图：`docs/research/mango-touch-osk.png`（实机 grim 抓的竖屏键盘）。
+验收（当时实机全过）：`mango -p` rc=0；`mmsg get all-monitors` scale=2 / 800x1280；`mmsg get all-layers`
+有 `wvkbd` overlay；uinput 点键盘 `q`/空格，wvkbd 输出 keycode 16/57；重启 `getty@tty1` 后
+`exec_once` 自动拉起外壳组件。截图：`docs/research/mango-touch-osk.png`（实机 grim 抓的竖屏键盘）。
+手势判定的验收方式见 [`docs/research/mango-touch.md`](research/mango-touch.md) §8。
 
-## 7. 桌面外壳：横屏 / 全宽 mangobar / 左下 dock / 编辑模式（2026-10-25 第三版）
+## 7. 桌面外壳：横屏 / 全宽 bar / 左下 dock / 编辑模式（2026-10-25 第三版）
+
+> **本章是 v3 当次的设计记录，其中「全宽 mangobar」已被后续版本取代**：自绘 mangobar 已删除，
+> 状态栏回到 **waybar**。现状以 **§7.18** 为准，本章只作演进记录保留。
 
 ### 7.1 横屏
 
@@ -382,9 +395,10 @@ mango 的键盘绑定按 keysym 匹配，而内部音量键经当前 keymap **�
 | 复用长连接 | 0px（只有第一条生效） |
 | 现在：每条命令读回复再关 | **+200px（与手指 1:1）** |
 
-顺带修的：`mango-shell-start` 现在显式 `export XDG_RUNTIME_DIR=$HOME/.xdg`，各 python 守护进程的
-`rt()` 也优先用带 `wayland-0` 的 `~/.xdg` —— 之前从 ssh 手动拉起守护进程时会去 `/run/user/1000`
-找 flag 文件，表现为"点了整理模式没反应"。
+> **历史回退路径（已废弃）**：这一版曾让 `mango-shell-start` 显式 `export XDG_RUNTIME_DIR=$HOME/.xdg`，
+> 各 python 守护进程的 `rt()` 也优先用带 `wayland-0` 的 `~/.xdg`。**实机 mango 进程现已改用
+> `/run/user/1000`**（logind 标准路径），`.xdg` 只是兜底，见 §7.16。不要照这段把 `XDG_RUNTIME_DIR`
+> 写死成 `$HOME/.xdg`，否则守护进程会去扫历史 socket 而连不上当前实例。
 
 ### 7.14 平铺窗口编辑模式（dock 十字）— 2026-10-25 进行中
 
@@ -456,15 +470,15 @@ mango 的键盘绑定按 keysym 匹配，而内部音量键经当前 keymap **�
 if [ -d "/run/user/$(id -u)" ]; then rt="/run/user/$(id -u)"; else rt="$HOME/.xdg"; fi
 ```
 
-而我的脚本是硬编码 `$HOME/.xdg` 的：
+而当时的脚本是硬编码 `$HOME/.xdg` 的：
 - `mango-shell-start` 强制 `export XDG_RUNTIME_DIR=$HOME/.xdg`
 - 各守护进程的 `rt()` 去 `~/.xdg` 找 `mango-*.sock` / flag 文件
 
-结果：mango 的 socket 在 `/run/user/1000/mango-864.sock`，而守护进程在 `~/.xdg` 里扫到一堆**上次会话的僵尸
+结果：mango 的 socket 在 `/run/user/1000/mango-<pid>.sock`，而守护进程在 `~/.xdg` 里扫到一堆**上次会话的僵尸
 socket**，connect 失败 → `mangobar` / `mango-dock` 启动即退出（变成 defunct），touchd/arrange/keys 全部
 连不上实例。所以看起来"配置没了"，其实是"组件起来了但连错了地方"。
 
-修复（全部改成动态发现，`~/.xdg` 只作兜底）：
+修复（全部改成动态发现，`~/.xdg` 只作兜底 —— 实机 mango 现在用 `/run/user/1000`）：
 
 ```python
 def rt():
@@ -482,7 +496,11 @@ def rt():
 验证：重启 shell 后 `mango-touchd / mango-dock / mango-osd / mango-arrange / mango-shell-watch /
 mangobar` 七个组件全部在，`mmsg get all-layers` 有 mangobar + mango-dock，改音量 OSD 正常弹出并在 1.5s 后消失。
 
-### 7.17 会话入口切到 fish、去掉 waybar、删除 mango-startup.sh（2026-10-25）
+### 7.17 会话入口切到 fish、删除 mango-startup.sh（2026-10-25）
+
+> ⚠️ **本节是当时的中间状态，不是现状**：当次曾把状态栏统一到自绘 mangobar 并停掉 waybar，
+> 但**现在 waybar 是现役状态栏**（`mango-shell-start:36` 里 `setsid waybar &` 拉起，运行中）。
+> mangobar 已在 v2 重写中删除（见 §9）。请看 §7.18 的现状表，本条只作演进记录。
 
 设备默认会话 shell 是 **fish**（`~/.config/fish/config.fish` 里 `status is-login` 分支启动 mango），
 并且这个分支会优先把 `XDG_RUNTIME_DIR` 设成 logind 的 `/run/user/<uid>` —— 这是标准做法，**保留不动**。
@@ -493,28 +511,51 @@ mangobar` 七个组件全部在，`mmsg get all-layers` 有 mangobar + mango-doc
 |---|---|
 | `/usr/local/bin/mango-startup.sh` | **删除**（仓库里的副本也删了）。它原来做三件事：`wlr-randr` 设 scale 1.4（mango 没实现 output-management，本来就是空操作）、起 swaybg、起 waybar |
 | fish 里的 `-s mango-startup.sh` | 去掉。mango 现在不带 `-s`，桌面组件由 `/etc/mango/config.conf` 的 `exec_once=/usr/local/bin/mango-shell-start` 拉起 |
-| waybar | **不再启动**（`mango-shell-start` 里显式 `pkill -x waybar`），状态栏统一用 mangobar |
+| waybar | 当次**不再启动**（`mango-shell-start` 里显式 `pkill -x waybar`），状态栏当次改用 mangobar。**后续已回归 waybar**，见 §7.18 |
 | 壁纸 | 移到 `mango-shell-start`：`pgrep -x swaybg || setsid swaybg -c '#1a1a2e'` |
 | XDG_RUNTIME_DIR | **不改**，跟随 logind；`mango-shell-start` 只在变量为空/目录不存在时才回退 `~/.xdg` |
 
-重启 `getty@tty1` 后的实测进程表：
+重启 `getty@tty1` 后的实测进程表（当次）：
 
 ```
 mango-touchd / mango-dock / mango-osd / mango-arrange / mango-shell-watch / mangobar / swaybg
-（无 waybar）
+（当次无 waybar；mangobar 后续已删除，waybar 已回归）
 ```
 
-图层：`background/wallpaper` + `overlay/mangobar` + `overlay/mango-dock`；
+图层（当次）：`background/wallpaper` + `overlay/mangobar` + `overlay/mango-dock`；
 mango 进程的 `XDG_RUNTIME_DIR=/run/user/1000`（未被改写）。
+
+### 7.18 现状：waybar 为现役状态栏（以本节为准）
+
+状态栏的最终形态是 **waybar**，不是自绘 mangobar：
+
+| 项 | 现状 |
+|---|---|
+| 状态栏 | **waybar 现役**，配置在 `configs/rootfs/home/magma/.config/waybar/{config.jsonc,style.css}` |
+| 拉起方式 | `mango-shell-start` 先 `pkill -x waybar` 清理旧实例（连写两次，见该脚本 :31-32），再 `setsid waybar &`（:36）重新拉起 —— 即「先清理旧实例再拉起」，不是"不启动" |
+| mangobar | **已删除**（含 `~/.config/mangobar/`）；`mango-shell-start:29` 只剩一条 `pkill -x mangobar` 的历史清理 |
+| XDG_RUNTIME_DIR | `/run/user/1000`（logind 标准路径）；`~/.xdg` 仅为历史回退 |
+
+验证：
+
+```sh
+pgrep -a waybar                                   # 期望：一行 waybar 进程
+ps -o pid,args -C waybar                          # 期望：非空
+```
+
+> 自绘 C 状态栏（`configs/mango-shell/mango-bar.c`）收不到 mango 派发的输入，因此不可行；
+> 详见 `AGENTS.md` §9.3。这也是状态栏最终用 waybar 的原因。
 
 ---
 
 ## 8. 交接声明
 
-桌面外壳（mangobar / dock / OSD / 手势 / 音量 / 编辑模式）与会话入口（fish / 壁纸 / mango 启动）
+桌面外壳（waybar / dock / OSD / 手势 / 音量 / 编辑模式）与会话入口（fish / 壁纸 / mango 启动）
 分属两路维护时，以 [`docs/handoff-mango-shell.md`](handoff-mango-shell.md) 为准：
 那里列了全部新增文件、`/etc/mango/config.conf` 增量、`$XDG_RUNTIME_DIR` 下的运行时契约、
 被删除/接管的对象，以及"合并时不要破坏的 6 条约束"。
+
+> 状态栏以 §7.18 为准：**现役是 waybar**，自绘 mangobar 已删除。
 
 ---
 
@@ -533,8 +574,11 @@ v1 的平铺 + 整理/编辑模式整体废弃。v2：
 - `mango-decor`：每窗口一条 layer-surface（top 层）做 macOS 风格标题条 —— 红/黄/绿三键
   （`killclient` / `minimized` / `togglemaximizescreen`）+ 整条拖动（`movewin`）
 - dock 居中，4 个图标：kitty / firefox / rofi / 键盘
-- mangobar 及其配置、整理模式、编辑模式、watcher、lisgd、`mango-startup.sh` 全部删除
+- mangobar 及其配置、整理模式、编辑模式、watcher、`mango-startup.sh` 全部删除；
+  `lisgd` 亦在此阶段移除，手势改由 `mango-touchd` 承担
 - 触摸手势只剩：3 指左右切 tag、3 指上滑 overview
+
+> 状态栏：本节当时删掉了 mangobar，随后**状态栏回到 waybar 并保持至今**，见 §7.18。
 
 标题条与窗口紧贴（间隙 0、只圆上方两角、底边不画线），边框随焦点变金/灰，视觉上是窗口的一部分。
 新窗口由装饰器 resize 到屏幕 11/16 × 7/10 再 `centerwin`，实测 kitty `200,120 880x560 is_floating=true`。

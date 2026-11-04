@@ -17,7 +17,7 @@
 - 决策：内核用宿主 `clang 23.1.3 + lld` 交叉编译（`make LLVM=1 ARCH=arm64`）；
   rootfs 用 ALARM 官方 aarch64 根包 + 官方仓库包解包组装；镜像用 `mke2fs -d` 直接产出（无需 mount）。
 - 影响：与上游 `pmbootstrap` 流程不同，因此 `bug.md` B-004 的 super 分区流程被自然规避；
-  同时 `pmbootstrap zap` 清理要求以 `scripts/audit-hygiene.sh` 的等价洁净度检查代替（本机从未产生 chroot）。
+  同时 `pmbootstrap zap` 清理要求以 `scripts/audit-hygiene.sh` 的等价洁净度检查代替（构建宿主从未产生 chroot）。
 
 ## D-003 根文件系统：ext4，4096 字节块/扇区对齐
 - 证据：`deviceinfo_rootfs_image_sector_size="4096"`（UFS 存储）。
@@ -91,26 +91,31 @@
   再挂根分区并 switch_root（insmod 失败仅告警，不阻塞挂根）。目的：无 adb 时也能靠屏幕看到早期日志，且面板尽早点亮。
 - 边界：initramfs 不含根文件系统驱动模块（F2FS/EXT4 均内置），因此根挂载不依赖任何模块。
 
-## D-013 旧系统（<device-ip>）实测事实（2026-10-24，只读采集）
-采集方式：`dbclient -y -i ~/.ssh/id_ed25519 elish@<device-ip> sh`（对端登录 shell 是 fish，
+## D-013 旧系统（参考设备）实测事实（2026-10-24，只读采集）
+
+> 本节数值均为**当次采集值，非通用前提**：换一台设备、换一次刷机都会不同。可复用的部分是
+> 「怎么采、采到了什么形状的结论」，不是具体数字。
+
+采集方式：`dbclient -y sh`（对端登录 shell 是 fish，
 必须显式执行 `sh` 并把脚本走 stdin，否则 POSIX 语法会被 fish 拒绝；`blockdev` 等需要 root 的命令取不到值）。
 
 | 项 | 实测值 | 影响 |
 |---|---|---|
 | 机型/面板 | `/sys/firmware/devicetree/base/model` = "Xiaomi Mi Pad 5 Pro (CSOT)" | **默认 dtb 用 `sm8250-xiaomi-elish-csot`**，boe 只作备选产物 |
-| root 分区 | `/dev/disk/by-partlabel/linux -> ../../sda36`，205,039,616 KiB ≈ 195.5 GiB，当前 ext4，`findmnt` 显示 `/dev/sda36 on /` | linux 分区**已存在且极大**（B-016 关闭）；镜像按实际需要定尺寸，首启后可用 `resize.f2fs` 扩到分区末尾 |
-| boot_b | `/dev/disk/by-partlabel/boot_b -> ../../sde37`，393,216 扇区 = 192 MiB | boot.img 必须 < 192 MiB；B-013 的 sde37 映射已确认 |
-| boot_a | `sde12` | 仅作对照，本项目不写 |
+| root 分区 | `/dev/disk/by-partlabel/linux`（当次解析到 `sda36`；`sd*`/`sde*` 编号随分区表变化，不要硬编码），当次测得 205,039,616 KiB ≈ 195.5 GiB，当次文件系统为 ext4 | linux 分区**已存在且极大**（B-016 关闭）；镜像按实际需要定尺寸，**容量以本机 `linux` 分区实际大小为准**（`findmnt /` 或 `fastboot getvar partition-size:linux` 查），首启后可用 `resize.f2fs` 扩到分区末尾 |
+| boot_b | `/dev/disk/by-partlabel/boot_b`（当次 393,216 扇区 = 192 MiB） | boot.img 必须小于本机 `boot_b` 分区实际大小（当次为 192 MiB）；B-013 的分区标签映射已确认 |
+| boot_a | 当次为 `sde12` | 仅作对照，本项目不写 |
 | CPU 拓扑 | cpu_capacity: cpu0-3 = 284，cpu4-6 = 871，cpu7 = 1024 | schedplace 的 little/big/prime 聚类目标值（运行时发现，不硬编码） |
-| 现用 cmdline | `root=UUID=7dc6b70a-… rootwait rw slot_suffix=_b console=tty0 loglevel=4` | 我们可用 `PARTLABEL=linux` 等价替代；ABL 会再追加 androidboot.* 等参数 |
+| 现用 cmdline | `root=UUID=7dc6b70a-… rootwait rw slot_suffix=_b console=tty0 loglevel=4` | 可用 `PARTLABEL=linux` 等价替代；ABL 会再追加 androidboot.* 等参数 |
 | 旧内核 | `7.2.0-xiaomi-elish+ #4 SMP PREEMPT Sat Oct 3 17:36:59 CST 2026` | **7.2.0 已在该机型上实测可跑**，进一步支持 D-001 不降版 |
-| 旧系统工具 | 有 gcc/g++/make/cmake/ninja/git/makepkg/python3/rustc；**无 meson**；8 核 / 7.5 GiB / 剩余 32 GiB | 可作 aarch64 原生构建宿主（见 D-014，待用户授权） |
+| 旧系统工具 | 有 gcc/g++/make/cmake/ninja/git/makepkg/python3/rustc；**无 meson**；8 核 / 7.4 GiB（`MemTotal: 7743060 kB`，当次采集）/ 剩余 32 GiB | 可作 aarch64 原生构建宿主（授权见 D-015） |
 | 旧系统缺 f2fs 工具 | 无 `mkfs.f2fs`/`fsck.f2fs`/`sload.f2fs`；`/lib/modules/7.2.0-xiaomi-elish+/` 下有 `f2fs.ko` 与两个 panel 模块 | f2fs 镜像必须在宿主侧制作（sload.f2fs），不能在设备上格式化 |
 | 旧桌面 | `/usr/share/wayland-sessions/` = kwin-steam.desktop / plasma.desktop（Plasma），无 wlroots/scenefx/mangowm | 与本项目 MangoWM 路线无冲突 |
 
-- 采集命令示例（可复核）：`grep -E ' sda36$| sde37$' /proc/partitions`、`cat /sys/class/block/sde37/size`、
+- 采集命令示例（可复核）：`ls -l /dev/disk/by-partlabel/linux /dev/disk/by-partlabel/boot_b`、
+  `cat /sys/class/block/$(basename $(readlink -f /dev/disk/by-partlabel/boot_b))/size`、
   `cat /boot/elish-cmdline`、`findmnt -no SOURCE,FSTYPE,OPTIONS /`。
-- 未取到（需 root 或额外授权）：`/sys/class/block/sda36/queue/logical_block_size`（读为空）→ f2fs 的 `-s`
+- 未取到（需 root 或额外授权）：`/sys/class/block/<linux 分区>/queue/logical_block_size`（读为空）→ f2fs 的 `-s`
   仍按 `deviceinfo_rootfs_image_sector_size=4096` 取 12，并在真机首启日志里复核。
 
 ## D-014 `fastboot --set-active=b` 交由人工执行，不进入脚本
@@ -121,12 +126,12 @@
   写成人工步骤，并说明 a 槽本项目不改不擦。
 - 复核：`bash scripts/flash-elish.sh --op set-active=b` 必须被拒绝（exit 2）。
 
-## D-015 授权把旧系统（<device-ip>）作为 aarch64 原生构建宿主（用户 2026-10-24）
-- 授权范围：只在 `$HOME/<build-dir>/` 内活动；不安装系统包、不写 /usr、不改 systemd、不碰任何分区。
-- 用途：MangoWM 0.18.3 必须在 aarch64 上编译（AUR `mangowm-git` 只声明 x86_64），而本机 x86_64 且无 root。
+## D-015 授权把旧系统（参考设备）作为 aarch64 原生构建宿主（用户 2026-10-24）
+- 授权范围：只在设备上的构建工作目录（默认 `$HOME/<build-dir>`，见 `scripts/build-mango-on-device.sh` 的 `DEV_BASE`）内活动；不安装系统包、不写 /usr、不改 systemd、不碰任何分区。
+- 用途：MangoWM 0.18.3 必须在 aarch64 上编译（AUR `mangowm-git` 只声明 x86_64），而宿主 x86_64 且无 root。
   设备侧已验证具备 gcc/g++/make/cmake/ninja/git/makepkg/python3/rustc（缺 meson，纯 Python 可在 $HOME 跑），
-  8 核 / 7.5 GiB / 剩余约 32 GiB。依赖（wlroots0.20、scenefx、wayland 头文件）以 ALARM 包解包进
-  `~/elish-build/sysroot` 的方式提供，不 pacman 安装。
+  8 核 / 7.4 GiB / 剩余约 32 GiB。依赖（wlroots0.20、scenefx、wayland 头文件）以 ALARM 包解包进
+  该目录下的 `sysroot` 的方式提供，不 pacman 安装。
 - 限制：构建产物只回传到宿主 `output/<date>/mango/`；设备侧目录可整体删除；禁止在设备上执行
   `mkfs`/`mount`/`dd` 到任何分区。
 - 回退：若构建破坏旧系统可用性（不预期），改用交叉编译或 qemu-system 路线，并在 bug.md 记录。
@@ -136,11 +141,11 @@
 - 约束：任何真机写入都必须在用户在场确认后执行；在此之前所有 fastboot 调用只走 dry-run。
 - 记录：刷入结果（成功/失败/回退）由用户回报后写入 bug.md 与 FLASH-LOG。
 
-### D-010 勘误（2026-10-24，由 rootfs 模块实测指出，dispatcher 已独立复核）
+### D-010 勘误（2026-10-24，由 rootfs 模块实测指出，已独立复核）
 - 勘误内容：D-010 原文写的 "`mkfs.f2fs` 的 `-s 12` 对齐 4096 扇区"是**错的**。
   宿主 `mkfs.f2fs -h` 实测：`-s # of segments per section [default:1]`，扇区大小对应的是 `-w wanted sector size`
   （man 8 亦同）。用 `-s 12` 会错误地把"每 section 12 段（24 MiB）"写进布局。
-- 复核证据（dispatcher 亲手执行）：`mkfs -h` 输出含 `-s # of segments per section`、`-w wanted sector size`；
+- 复核证据（独立复检时重跑）：`mkfs -h` 输出含 `-s # of segments per section`、`-w wanted sector size`；
   64 MiB 试探镜像的 `fsck.f2fs -l` 显示 `log_sectorsize: 9`、`log_sectors_per_block: 3`（9+3=12）；
   `dump.f2fs -f` 显示 `superblock features = 0`。
 - 修正后的做法：
@@ -187,7 +192,7 @@
 - 实测（详见 `docs/build-performance.md`）：CoreMark +7.4%（A77）/+4.9%（A55）；
   LSE 原子微基准 ~1.7x；64 MiB 负载打包 xz 23.6 s → zstd 0.62 s；lz4-local 的
   `build()` 在小核 44.1 s、停 schedplace 后 11.85 s；构建产物在 A55 上运行无 SIGILL。
-- 边界：只影响本机重建的包（ALARM 预编译包仍是通用 armv8-a）；schedplace 规则不修改，
+- 边界：只影响在构建宿主上重建的包（ALARM 预编译包仍是通用 armv8-a）；schedplace 规则不修改，
   构建提速靠临时 `systemctl stop schedplace`（背景见 `configs/perf/schedplace.conf`
   的 `[rule background-pkg]`）。
 - 落盘：`configs/rootfs/etc/makepkg.conf(+conf.d)` 为真相源，设备副本已同步；旧配置备份

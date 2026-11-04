@@ -11,7 +11,7 @@ $ FEX /opt/fex/RootFS/default/bin/busybox uname -m   # 动态 x86-64 (musl)
 x86_64
 ```
 
-## 构建要点（设备端源码构建，8 核约 12 分钟）
+## 构建要点（设备端源码构建，8 核约 12 分钟；本仓库测试设备实测）
 
 | 依赖 | 为什么 |
 |---|---|
@@ -29,7 +29,7 @@ cd ~/fex && mkdir -p build && cd build
 cmake -G Ninja -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
       -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_FEXCONFIG=FALSE ..
-ninja -j8          # 8150 个目标
+ninja -j"$(nproc)"  # 8150 个目标；本仓库测试设备 nproc=8，即 -j8
 sudo ninja install  # -> /usr/bin/{FEX,FEXBash,FEXServer,...} + /usr/share/fex-emu/
 ```
 
@@ -50,4 +50,4 @@ sudo cp ~/.fex-emu/Config.json /root/.fex-emu/Config.json
 注意：
 - Alpine rootfs 是 **musl**，只能跑 musl 程序；要跑 glibc 程序（多数 x86 商业软件/Steam）需要换成 glibc rootfs（Arch/Debian x86-64）。
 - `FEXBash` 会 chroot 进 rootfs，必须以 root 运行；普通用户可直接用 `FEX <binary>` 跑动态程序（FEX 自己解析 ld.so）。
-- 本次未构建 thunks（`BUILD_THUNKS=OFF`），即还没有 Windows/WOW64 支持；要跑 Windows 程序需另行开启并准备 32-bit 环境。
+- 构建时未启用 thunks（`BUILD_THUNKS=OFF`），即还没有 Windows/WOW64 支持；要跑 Windows 程序需另行开启并准备 32-bit 环境。

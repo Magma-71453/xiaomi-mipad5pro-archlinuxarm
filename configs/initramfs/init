@@ -146,7 +146,8 @@ mount_root() {
 }
 
 # Grow the f2fs root filesystem to the size of its partition before mounting.
-# The image is built small on purpose (the host must not create a 195 GiB file),
+# The image is built small on purpose (the host must not create a file the size
+# of the target partition),
 # so the first boot has to expand it.  resize.f2fs must run offline, which is
 # exactly where we are: the root fs is not mounted yet.
 maybe_resize_root() {

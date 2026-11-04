@@ -36,7 +36,7 @@
   触发条件：任何沿用 pmOS 安装脚本的路径。 / 根因：pmOS 依赖 Android 动态分区；本项目硬性禁止。 /
   临时规避：**不走 pmOS 安装流程**。根文件系统放在独立的 `linux` 分区，内核/引导镜像写入 `boot_b`，
   由自建 initramfs 按分区标签探测根分区。 / 计划修复阶段：S2（若某步骤仍生成需写入其它分区的产物，必须先记录并改造该步骤）。
-  例外（用户于 2026-10-24 显式授权）：仅允许 **一次性 `fastboot erase dtbo_b`**，用于清除 Android 遗留的 dtbo overlay；
+  例外（本仓库维护策略显式授权）：仅允许 **一次性 `fastboot erase dtbo_b`**，用于清除 Android 遗留的 dtbo overlay；
   必须由显式开关 `--allow-dtbo-erase` 触发，脚本默认永不执行，且该操作强制写入审计日志。见 D-009。
 
 ### B-005 rootfs 镜像扇区大小必须 4096
@@ -48,7 +48,7 @@
 - **[已知]** 现象：dtb 分 `qcom/sm8250-xiaomi-elish-boe` 与 `-csot` 两支。 /
   触发条件：设备实际屏幕供应商不同时。 / 根因：两种面板的显示链路参数不同。 /
   临时规避：boot 镜像内同时携带两个 dtb（`deviceinfo_append_dtb="true"`），
-  必要时提供两个 boot 镜像由用户选择。 / 计划修复阶段：S1。
+  必要时提供两个 boot 镜像由使用者选择。 / 计划修复阶段：S1。
 
 ## 三、桌面与用户态
 
@@ -88,30 +88,30 @@
 
 ---
 
-## 五、用户裁决记录（2026-10-24）
+## 五、维护决策记录（2026-10-24）
 
 ### B-012 MangoWM 依赖版本路线（已裁决）
 - **[已裁决]** 现象：任务书要求 wlroots 0.19.2 + scenefx 0.4.1，但 MangoWM 自提交 `0fc7559c3c`
   （2026-06-19 "version: chase wlroots 0.20"）起改用 wlroots>=0.20 / scenefx>=0.5，旧约束只对应 <= 0.14.4。 /
   触发条件：S3 构建 MangoWM。 / 根因：上游 API 迁移；ALARM 仓库只有 wlroots0.20 0.20.2-1 与 scenefx 0.5-1，
   没有 0.19.x 的 wlroots 包（AUR wlroots0.19 已 orphan、scenefx0.4 已 OOD）。 /
-  处置：**采用 MangoWM 0.18.3 + ALARM 现成 wlroots0.20 / scenefx 0.5**（用户裁决，零自建）；
+  处置：**采用 MangoWM 0.18.3 + ALARM 现成 wlroots0.20 / scenefx 0.5**（已裁决，零自建）；
   偏离任务书字面版本约束的理由与证据记入 D-008。 / 计划修复阶段：S3。
 
 ### B-013 dtbo overlay 与启动风险（已裁决为例外操作）
 - **[已裁决]** 现象：Armbian Flashing-Guide 与 pmOS wiki 的 elish 刷入步骤均要求先 `fastboot erase dtbo_b`，
   否则 ABL 可能把 Android 遗留 dtbo overlay 叠加到自带 dtb 上，导致面板/UFS 配置不匹配而起不来。 /
   触发条件：真机首次刷入。 / 根因：小米 ABL 对 dtbo 分区的套用行为。 /
-  处置：用户授权**一次性** `erase dtbo_b` 例外（D-009），其余分区写/擦除仍然绝对禁止；脚本默认永不执行该操作。 /
+  处置：已授权**一次性** `erase dtbo_b` 例外（D-009），其余分区写/擦除仍然绝对禁止；脚本默认永不执行该操作。 /
   计划修复阶段：S2/S5（真机阶段，PENDING-DEVICE）。
 
 ---
 
-## 六、2026-10-24 用户指示引起的变更
+## 六、2026-10-24 维护决策引起的变更
 
 ### B-014 linux 分区改用 f2fs（含内核配置偏差）
-- **[已裁决]** 现象：原先按 ext4 规划 rootfs，用户指定改用 f2fs。 / 触发条件：制作 linux 分区镜像。 /
-  根因：用户对日常桌面场景的文件系统选择。 / 处置：内核 config 追加 `CONFIG_F2FS_FS=y`（上游为 =m），
+- **[已裁决]** 现象：原先按 ext4 规划 rootfs，后改用 f2fs。 / 触发条件：制作 linux 分区镜像。 /
+  根因：日常桌面场景下的文件系统选择。 / 处置：内核 config 追加 `CONFIG_F2FS_FS=y`（上游为 =m），
   镜像用 `mkfs.f2fs` + `sload.f2fs` 目录填充；compression 特性不启用
   （内核未开 `CONFIG_F2FS_FS_COMPRESSION`）。 / 计划修复阶段：S1（内核 / rootfs）。
   **勘误 (2026-10-24)**: mkfs.f2fs 的 −s 不是扇区大小（是 segments per section）；正确做法见 D-010 勘误：
@@ -129,7 +129,7 @@
 - **[已核实]** 现象：Armbian 的 elish Flashing-Guide 中 `linux` 分区是**手工创建**的
   （parted 缩减 userdata -> mkpart linux），并非出厂 GPT 自带；本项目脚本不得触碰 userdata。 /
   触发条件：真机首次刷入且 `/dev/disk/by-partlabel/linux` 不存在时。 / 根因：出厂分区表无 linux 分区。 /
-  临时规避：刷机指南把该步骤列为**用户本人执行**的前置条件（给命令与风险说明），本仓库任何脚本都不执行它。 /
+  临时规避：刷机指南把该步骤列为**使用者本人执行**的前置条件（给命令与风险说明），本仓库任何脚本都不执行它。 /
   计划修复阶段：S2（文档）/ S5（真机确认）。
 
 ### B-017 FEX-Emu 无现成 aarch64 二进制
@@ -157,13 +157,13 @@
 | B-009 | 无 root 构建环境 | 已缓解 | 无 root 路线跑通：内核交叉编译 + sload.f2fs 组镜像 + qemu-user-static 生成 ldcache |
 | B-010 | 宿主缺 bc/dtc 等 | 已解决 | 从官方镜像解包到 .build/tools（用户级，未系统安装） |
 | B-012 | MangoWM 版本路线 | 已裁决·已构建 | 0.18.3 在设备原生编译成功（S3-b），NEEDED 含 libwlroots-0.20.so / libscenefx-0.5.so |
-| B-013 | dtbo overlay 风险 | 已裁决·待真机 | D-009 一次性 erase dtbo_b，脚本三重门控；真机执行前需用户在场（D-016） |
+| B-013 | dtbo overlay 风险 | 已裁决·待真机 | D-009 一次性 erase dtbo_b，脚本三重门控；真机执行前需使用者在场（D-016） |
 | B-014 | f2fs 化 + 内核偏差 | 已解决（勘误后） | CONFIG_F2FS_FS=y 片段；compression 未启用；扇区参数按 D-010 勘误实现 |
 | B-015 | gamemod 类方案局限 | 已裁决·已替代 | perf/schedplace 重写并 375 checks 通过；旧行为仅作默认关闭 profile |
-| B-016 | linux 分区来源 | 已核实·已关闭 | /dev/sda36，≈195.5 GiB，已存在（D-013）；脚本零触碰 userdata |
+| B-016 | linux 分区来源 | 已核实·已关闭 | /dev/sda36，约 195.5 GiB（当次采集值），已存在（D-013）；脚本零触碰 userdata |
 | B-017 | FEX 无 aarch64 二进制 | 已确认·延后 | 首次开机后设备上源码构建 |
 
-### 新增（本轮发现）
+### 新增
 
 ### B-018 f2fs 镜像的 SIT 修复未持久化
 - **[开放-返工中]** 现象：把交付镜像复制一份跑 `fsck.f2fs -f` 会出现 `[FSCK] fixing SIT types`；同一副本再跑第二/三次则 0 次修复（收敛），
@@ -179,12 +179,12 @@
 - 处置：记录为已知缺失，首启后评估替代（自建包或放弃音频录制类功能）。 / 计划修复阶段：S5。
 
 ### B-021 首启后需扩容根分区
-- **[开放-已文档化]** 现象：镜像 16 GiB，而 linux 分区约 195.5 GiB。 / 触发条件：首次开机后。
+- **[开放-已文档化]** 现象：镜像 16 GiB，而 `linux` 分区实际大小远大于它（本仓库测试设备为 195.5 GiB，当次采集值）。 / 触发条件：首次开机后。
 - 处置：在未挂载环境执行 `resize.f2fs /dev/disk/by-partlabel/linux`（用法见 docs/findings/rootfs.md §7.4 与刷机指南）；脚本不自动执行。 / 计划修复阶段：S5 真机。
 
 ---
 
-## 八、S1 返工复验（2026-10-24，dispatcher 独立执行）
+## 八、S1 返工复验（2026-10-24）
 
 | 编号 | 原状态 | 复验结论 | 证据 |
 |---|---|---|---|
@@ -193,7 +193,7 @@
 | B-020 | 开放-低频 | 仍开放（已定级） | 缺 `hexagonrpcd` → 扬声器/耳机无声、录音不可用、自动旋转/亮度不可用；GPU/显示/触控/相机不受影响 |
 | B-021 | 开放-已文档化 | 仍开放（真机项） | 首启后 `resize.f2fs`；镜像内已有 `mkfs.f2fs/fsck.f2fs/resize.f2fs`（tar 实测 3 个二进制） |
 
-### 单次验收快照（全部由 dispatcher 亲手执行）
+### 单次验收快照（逐条执行）
 - `sha256sum -c SHA256SUMS`（output/20261024）：**11 条全部"成功"**；consolidated `MANIFEST` 11 条目，含目标分区 boot_b / linux。
 - `make-bootimg.py --verify`：`kernel_size=15,628,099`、`cmdline = quiet rootwait root=PARTLABEL=linux console=tty0 loglevel=4`、`verify.status=OK`。
 - `bash tests/run.sh`：**5 步 0 失败，ALL TESTS PASSED**。
@@ -207,7 +207,7 @@
 - **[修复中]** 现象：内核与 initramfs 都正常（f2fs 挂载成功、switch_root 执行），随后 PID 1 死于 SIGSEGV(11)，内核 panic。 / 触发条件：switch_root 到 rootfs 的 systemd 261.2-1（glibc 2.43）。 / 根因（候选，已按顺序处理）：根分区以 ro 挂载且从未 remount rw；/dev /proc /sys 未搬移进新根。 / 修复：init 里加 remount rw + mount --move + /dev/console 兜底 + switch_root 前直接 chroot newroot systemd --version 打印诊断行。 / 复核：宿主 binfmt 下 chroot /tmp/rf systemd --version 正常（systemd 261 / glibc 2.43），说明二进制本身没问题，问题在 PID1 运行环境。 / 计划修复阶段：S1 真机迭代。
 
 ### B-023 更新：已修复（2026-10-24 真机）
-- **[已修复]** 用户现场确认：修过的 init 镜像启动后 **停在 tty 登录界面**（此前是 PID 1 SIGSEGV panic）。
+- **[已修复]** 真机现场确认：修过的 init 镜像启动后 **停在 tty 登录界面**（此前是 PID 1 SIGSEGV panic）。
   证据链：ABL Load Error 消失 → 内核启动 → 面板点亮 → f2fs 挂载 → switch_root → **systemd 起来并拉起 getty**。
   修复项即 D-018 的三条：dtb 零填充、remount rw、mount --move /dev /proc /sys。
 
@@ -215,7 +215,7 @@
 - **[开放-进行中]** 现象：tty 停在登录提示，但 `magma` 用户没有设置密码（root 被锁），因此无法登录；同时没有任何 display-manager/session 会自动拉起 MangoWM。
   / 触发条件：首次开机。 / 根因：rootfs 组装时只建了用户与组，没设密码，也没配置自动登录与 mango 会话启动器。
   / 处置：rootfs 重做——给 magma 设密码、tty1 自动登录、加 mango-session 启动器（seatd + XDG_RUNTIME_DIR + exec mango）、启用 NetworkManager 以便配置 Wi-Fi；重出镜像并重刷。
-  / 计划修复阶段：S1 真机迭代（本轮）。
+  / 计划修复阶段：S1 真机迭代。
 
 ### B-025 刷入后大文件数据与镜像不一致（当前唯一阻塞）
 - **[开放-调查中]** 现象：设备上 `md5sum` 读到的 `libcrypto.so.3`(6.5MB)=`079c675d…`、`libpython3.14.so.1.0`= `13dae948…`，
@@ -262,11 +262,11 @@
 - `ps -u magma`：`/usr/bin/mango` 在 tty1、`Xwayland :0 -rootless` 同时在跑；
 - `$HOME/.xdg/wayland-0` socket 存在；`/dev/dri/card0` + `renderD128` 可访问；
 - `magma` 已在 `video/render/input/seat` 等组；`seatd -g seat` 运行中；
-- 屏幕：MangoWM 平铺桌面（用户确认）。
+- 屏幕：MangoWM 平铺桌面（真机现场确认）。
 
 ### 遗留（下一步）
 - `dbus-broker` 未运行 → `systemctl`/`loginctl` 不可用（不影响桌面，但要修）；
-- `resize.f2fs` 把根从 16 GiB 扩到 195 GiB（真机执行）；
+- `resize.f2fs` 把根从 16 GiB 扩到 `linux` 分区实际大小（真机执行；本仓库测试设备为 195 GiB 量级，当次采集值）；
 - 固件 GPU 早期加载失败（`a650_sqe.fw` error -2，initramfs 里没有固件）—— 需把 GPU 固件放进 initramfs；
 - 音频因缺 `hexagonrpcd` 预期无声；Wi-Fi/BT 未配置；suspend/触摸/相机未验证；
 - FEX-Emu（S5）与性能守护进程上机标定。
@@ -278,7 +278,7 @@
   systemd 的 **gpt 自动生成器** 把 Android 的 ESP 类型分区 `/dev/sda35` 生成 `boot.automount` 挂到 `/boot`，
   该分区不是可挂载的 FAT（`FAT-fs: bogus number of reserved sectors`），挂载失败后 `dbus-broker` 的 mount namespace 初始化失败，系统总线永远起不来。
 - 处置：屏蔽两个自动生成的单元（`/etc/systemd/system/boot.mount`、`boot.automount` → `/dev/null`），重启后 `systemctl is-system-running` = **running**，`dbus-broker` 正常。
-- 预防：内核 cmdline 追加 `systemd.gpt_auto=no`（我们不需要 /boot，内核与 initramfs 都在 boot_b）。
+- 预防：内核 cmdline 追加 `systemd.gpt_auto=no`（本系统不需要 /boot，内核与 initramfs 都在 boot_b）。
 - 顺带：Wi-Fi 侧已验证可用 —— `nmcli device status` 显示 `wlp1s0 wifi disconnected`，`nmcli device wifi list` 能扫到一堆 2.4 GHz 热点。
 
 ## B-031 设备上 pacman 任何操作都失败（Landlock / 文件冲突）
@@ -322,9 +322,9 @@
   冷启动并不能解决，因为 MAC 依旧读不出来（ath11k 的 `soc_id 0xffffffff` 说明 QMI soc info 读取失败）。
 - **处置（已验证）**：给接口设一个本地管理 MAC 后立即恢复：
   ```
-  sudo ip link set wlp1s0 address 02:00:00:12:34:56
+  sudo ip link set wlp1s0 address 02:00:00:12:34:56   # 历史值，已由 B-051 改为序列号派生
   sudo ip link set wlp1s0 up
-  # -> wlp1s0 UP, nmcli 自动连回 SSID <wifi-ssid>, <device-ip>, ping 外网 0%% 丢包
+  # -> wlp1s0 UP, nmcli 自动连回 SSID <wifi-ssid>, 地址 <device-ip>, ping 外网 0%% 丢包
   ```
   已固化为 `wlp-mac.service`（开机在 NetworkManager 之前设 MAC 并 up，可在 `configs/rootfs/etc/systemd/system/` 找到）。
 - 完全关机（长按电源）再开机仍然必要——用于 WCN6855 的 MHI 卡死；但**即使冷启动，MAC 仍需要被设置**。
@@ -367,7 +367,7 @@
   并新增 `usb-gadget-off.service`（开机解绑 UDC）。**同时要拔插一次充电器**让充电器重新做识别。
 - 结果：`usb_type` 从 Unknown/SDP 变为 **DCP**，`current_max` 500 mA → **1.6 A**，
   电池从 -235 mA 变为 **+731 mA 充电中** ✓
-- 备注：串口控制台随之关闭（`/dev/ttyACM*` 不再出现），后续维护走 SSH（<device-ip>）或 fastboot。
+- 备注：串口控制台随之关闭（`/dev/ttyACM*` 不再出现），后续维护走 SSH（`<device-ip>`）或 fastboot。
 
 ## B-038 快充（33 W）不可用的原因链（部分结论）
 
@@ -471,7 +471,7 @@
 - 程序行为：遍历所有 `/dev/input/event*`，`select()` 0.5 s 超时 + 每 2 s 重扫热插拔，把音量键 115/114/113 转给 `mango-volume`。
 - 推测根因：与 B-041 同类 —— 某个 evdev 设备被移除/阻塞后 fd 持续可读、`os.read()` 返回 0 字节，循环不再等待而变成忙等；
   重启守护会短暂恢复（曾观察到重启后 0.3%），随后再次爬升。
-- 处置：**直接移除**（用户决定，音量的收益不值得一个核）：
+- 处置：**直接移除**（音量的收益不值得一个核）：
   - 设备：`pkill -f mango-keys` + 删除 `/usr/local/bin/mango-keys` + 从 `/usr/local/bin/mango-shell-start` 去掉启动/清理行；
   - 仓库：删除 `configs/rootfs/usr/local/bin/mango-keys`，同步 `mango-shell-start`，文档（`docs/mango.md`、`handoff-mango-shell.md`、`mango-shell-summary.md`、`README.md`）标注已移除。
 - 效果：`ps` 前几名变为 `wechat 10.8%`、`mango 7.1%`，不再有单核常驻占用。
@@ -486,7 +486,7 @@
   ```
   1305 Ds  87  /usr/bin/fstrim --listed-in /etc/fstab:/proc/self/mountinfo --verbose --quiet-unsupported
   ```
-  `fstrim.timer`（Arch 默认启用，每周）在开机后立刻触发，对 **196 GB 的 f2fs 根分区**做 TRIM。
+  `fstrim.timer`（Arch 默认启用，每周）在开机后立刻触发，对**根分区**（本仓库测试设备 `df` 显示 196 GB）做 TRIM。
 - 为什么会导致关机卡死：D 状态的进程**连 SIGKILL 都不响应**，systemd 停止 `fstrim.service` 时只能一直等（默认 90 s 后仍无法回收），
   随后 `systemctl reboot` 卡在 stop job 上，看起来就是“卡住不关机”。
 - 修复：
@@ -562,7 +562,7 @@
      6 次 `QCA memdump Done`，伴随 `preshutdown_cmd failed (-110)`），白耗电。
 - 修复（已验证）：写一个本地管理 MAC，内核随即 open 并发布 index。
   ```sh
-  sudo btmgmt --index 0 public-addr 02:00:00:12:34:57
+  sudo btmgmt --index 0 public-addr 02:00:00:12:34:57   # 历史值，已由 B-051 改为序列号派生
   # -> hci0 Set Public Address complete
   # -> btmon: New Index 02:00:00:12:34:57 / Index Info / Open Index
   ```
@@ -573,22 +573,22 @@
   的 probe 较晚，unit 抢跑失败后必须能自愈，而不是等下一次重启。
 - 注意：MAC 是**易失**的。控制器 power off/on 后保留，但 `hci_uart` 重新 probe
   （unbind/bind、重新加载模块、每次开机）就会丢，所以必须每次开机跑一次。
-- 验证（真机，先复现再修复）：
+- 验证（真机，先复现再修复；下列地址均为当时的写死值，现由 B-051 的序列号派生取代）：
   ```sh
   # 复现：unbind/bind 重置 BD_ADDR
   echo serial0-0 | sudo tee /sys/bus/serial/drivers/hci_uart_qca/unbind
   sleep 3; echo serial0-0 | sudo tee /sys/bus/serial/drivers/hci_uart_qca/bind
   btmgmt info            # -> Index list with 0 items
-  # 修复
+  # 修复（当时手工写死；现行做法是 elish-mac-address 派生，见 B-051）
   sudo systemctl start elish-bt-mac.service
   btmgmt info            # -> Index list with 1 item, addr 02:00:00:12:34:57
   bluetoothctl list      # -> Controller 02:00:00:12:34:57 elish [default]
   bluetoothctl show      # -> Powered: yes
   bluetoothctl --timeout 10 scan on   # -> 扫到十几个设备（BR/EDR + LE 都有）
   ```
-  幂等：第二次 `systemctl restart` 打印 `already configured: 02:00:00:12:34:57 ...` 后退出 0。
+  幂等：第二次 `systemctl restart` 打印 `already configured: 02:00:00:12:34:57 ...` 后退出 0（历史值）。
 
-  **开机自动化验证（真重启，boot_id `86403e62` → `52b3f24e`）**：\
+  **开机自动化验证（真重启，boot_id `<old-boot-id>` → `<new-boot-id>`）**：\
   `journalctl -b -u elish-bt-mac` 显示 unit 在 monotonic **15.45 s 由 systemd 自动拉起**
   （不是手动），15.50 s 第一次 `public-addr` 即成功，结果 `Result=success`、
   `ExecMainStatus=0`；随后 `btmgmt info` 为 `Index list with 1 item`、
@@ -599,12 +599,12 @@
   > 只有在真机上重启一次（比对 `boot_id`）才算验证过开机路径。
 - 回退：`sudo systemctl disable --now elish-bt-mac`，删除
   `/usr/local/bin/elish-bt-mac` 与 `/etc/systemd/system/elish-bt-mac.service`，再 `systemctl daemon-reload`。
-- 已知限制：MAC 固定为本地管理地址 `02:00:00:12:34:57`（与 Wi-Fi 的 B-033 同一风格），
+- 已知限制：当时 MAC 固定为本地管理地址 `02:00:00:12:34:57`（历史值，已由 B-051 改为序列号派生），
   不是厂商写死的真实地址；真正持久化需要往 `bluetooth_a`/`persist` 分区写 NV，本次**没有**动这些分区。
 
 ## B-048 蓝牙键盘连不上（br-connection-create-socket / Page Timeout）
 
-- 现象：`bluetoothctl connect <keyboard-bd-addr>`（B.O.W 键盘）失败，报
+- 现象：`bluetoothctl connect <keyboard-bd-addr>`（B.O.W 键盘；外设真实地址已脱敏）失败，报
   `org.bluez.Error.Failed br-connection-create-socket`。
 - 根因（确凿）：`CONFIG_BT_HIDP=m`，而 **`hidp` 模块从未被加载**，也没有任何东西触发它。
   bluez 连接 HID 设备时要先建 L2CAP **HIDP** socket，模块不存在 → 在发出任何 HCI 流量之前就失败。
@@ -687,14 +687,15 @@
 ## B-051 蓝牙/Wi-Fi 地址写死导致分发镜像所有设备撞号
 
 - 现象：B-047/B-033 最初把 BD_ADDR 写死成 `02:00:00:12:34:57`、Wi-Fi 写死成
-  `02:00:00:12:34:56`。自己一台机器没问题，但**同一个镜像刷到第二台平板就撞号**。
+  `02:00:00:12:34:56`（两者均为已废弃的历史值，仅用于说明撞号问题的由来）。
+  单台机器没问题，但**同一个镜像刷到第二台平板就撞号**。
 - 修复：新增 `/usr/local/bin/elish-mac-address`，从设备唯一序列号派生本地管理地址：
   ```sh
-  elish-mac-address bt     # -> <derived-bt-mac>
+  elish-mac-address bt     # -> <derived-bt-mac>    （由序列号派生，每台设备不同）
   elish-mac-address wlan   # -> <derived-wlan-mac>
   ```
   派生源优先 `androidboot.serialno`，退到 `/sys/devices/soc0/serial_number`，再退到 `/etc/machine-id`；
-  `bt`/`wlan` 用不同域串，保证两个无线电不会撞。
+  `bt`/`wlan` 用不同域串，保证两个无线电不会撞。**地址不写进文档，任何设备都现场用该命令取。**
   `elish-bt-mac` 与新的 `elish-wlan-mac` 都改用它。
 - 两个必须注意的细节（都已踩过）：
   1. **输出必须大写**。bluez 用控制器上报的地址（大写）命名
@@ -711,7 +712,7 @@
 
 ## B-052 开机即用：新设备首次配对的最小前置条件
 
-- 汇总一条给"刷完镜像就能用"的清单（都不是用户该手动做的事）：
+- 汇总一条给"刷完镜像就能用"的清单（都不是使用者该手动做的事）：
   ```sh
   systemctl is-enabled bluetooth.service elish-bt-mac.service elish-bt-autoconnect.service wlp-mac.service
   lsmod | grep -E '^hidp'        # 键盘/鼠标必需
@@ -726,7 +727,7 @@
 ## B-053 `br-connection-create-socket` 是误导性错误：真因是 L2CAP 建链失败
 
 - 现象：`bluetoothctl connect` 报 `org.bluez.Error.Failed br-connection-create-socket`，
-  极易被理解为"本地建不了 HIDP socket"。**这个理解是错的**，我在排查中就被它带偏过两轮。
+  极易被理解为"本地建不了 HIDP socket"。**这个理解是错的**，排查时就曾被它带偏过两轮。
 - 真因（bluez 自己的日志才说得清）：
   ```
   profiles/input/device.c:control_connect_cb() connect to <keyboard-bd-addr>: Host is down (112)
@@ -755,7 +756,7 @@
   - 在配对窗口时广播 `Limited Discoverable Mode`，**可发现但不可连接**；
   - 离开窗口后扫描 5 次全部 0 命中，即休眠；
   - 同一时刻只能连一个主机，被别的电脑占用时不响应本机 page。
-- 处置：本机侧无需再改。用户按一下键盘唤醒即可连上；`elish-bt-autoconnect`
+- 处置：本机侧无需再改。使用者按一下键盘唤醒即可连上；`elish-bt-autoconnect`
   会在开机后尽力重连，连不上只记一条 `still not connected`，不影响开机。
 
 ## B-054 dock 显隐信号只在第一次生效（unmap 后 attach buffer 被拒，dock 被杀）
@@ -854,14 +855,14 @@
      stderr 全丢**，于是"进程死了"和"被隐藏"从外部完全无法区分；
   5. 之后的每次三指上滑都只是给一个不存在的 pid 发 `SIGUSR2`，所以毫无反应。
 - 复现（修复前，全屏窗口在场 + 反复 hide/show）：30 轮里崩 10 轮；单次 hide 也有概率中招，
-  所以用户侧表现为"偶发、一旦发生就永久消失"。
+  所以外部表现为"偶发、一旦发生就永久消失"。
   `WAYLAND_DEBUG=1` 抓到的最后一段就是：`ack_configure(2687)` 之后
   `wl_display.error(..., "wrong configure serial: 2687")`。
 - 修复（`configs/mango-shell/mango-dock.c`、`configs/rootfs/usr/local/bin/mango-shell-start`）：
   - **隐藏不再 unmap**：`set_exclusive_zone(0)` + `wl_surface_set_input_region(空 region)` +
     同一块缓冲重绘成全透明（`draw_blank()`）；显示 = zone 82 + `set_input_region(NULL)` + 重绘。
     表面始终 mapped ⇒ 不再有 `layer_surface_reset()`；
-  - `configure` 只记录，本轮 dispatch 结束由 `apply_configure()` **只 ack 最新的一个**；
+  - `configure` 只记录，每次 dispatch 结束由 `apply_configure()` **只 ack 最新的一个**；
   - 首个 configure 被 ack 之前（`acked == 0`）只允许空提交，否则就是
     `error 2: layer_surface has never been configured`；
   - 隐藏态下指针/触摸回调直接返回，避免在飞事件把 dock 画回来或误启动应用；
@@ -876,7 +877,7 @@
   #    隐藏后同一坐标注入 tap 一条都不来（input region 生效）
   ```
 - 结论/教训：**layer-shell 表面的显隐不要用 unmap 做**；一旦必须有进程常驻，就一定要有
-  supervisor + 保留 stderr，否则"被杀"与"被隐藏"在外部不可区分、且用户只看得到"没反应"。
+  supervisor + 保留 stderr，否则"被杀"与"被隐藏"在外部不可区分、且桌面上只看得到"没反应"。
 
 
 ## B-057 boot.img 的 DTB 又被 2048 字节对齐填充（构建脚本回归，ABL 会 Load Error）
@@ -931,7 +932,7 @@
 - 验证：新 boot.img cmdline = `quiet rootwait root=PARTLABEL=linux console=tty0 loglevel=4 systemd.gpt_auto=no`；
   仓库/设备 70 个同名文件核对 58 相同、10 差异（运行时文件或明确本地偏好）、2 个本地源码未跟踪；
   `bash tests/run.sh` 见最终自检。
-- 限制：rootfs 镜像本轮未构建；这些文件要等下次 rootfs 构建/同步才落到 linux 分区。
+- 限制：rootfs 镜像当时未构建；这些文件要等下次 rootfs 构建/同步才落到 linux 分区。
   设备当前状态本身正确（right_slot=2、pacman.conf 已改、NOPASSWD 已开），无需改设备。
 
 ## 2026-11-04 核查后状态补充（不改旧条目，仅追加）
@@ -944,7 +945,7 @@
 | B-031 | 已修复（仅真机） | ✅ 仓库已补 `configs/rootfs/etc/pacman.conf`（B-059），重建不再丢 |
 | B-013 | 已裁决·待真机 | 📌 设备 dtbo_b 实际已全 0（erase 已执行），台账状态过时 |
 | B-008/B-017 | 无现成 FEX 包，延后 | 📌 设备已有自建 FEX（/usr/bin/FEX*，无包属主），台账未更新 |
-| B-021 | 开放-已文档化 | 📌 设备根已扩到 196 GiB（df 195.2G），需求已满足；fstab 注释仍写 16 GiB 首启扩容 |
+| B-021 | 开放-已文档化 | 📌 设备根已扩到 196 GiB（`df` 195.2G；均为当次采集值），需求已满足；fstab 注释仍写 16 GiB 首启扩容 |
 | B-020 | 开放-低频 | 仍缺 hexagonrpcd（无包/无二进制） |
 
 > 发布同步：Release 26/11/04 已用修复后的产物重新上传（boot.img sha256 `8d54f256…`、
@@ -965,8 +966,8 @@
   `snd-soc-sm8250.ko.zst` 的 sha256 与 Release 一致（`8a411983…`/`e3359d4e…`/`fd817e99…`）。
   `sudo modprobe rfcomm bnep` rc=0，`lsmod` 可见；`sudo systemctl restart bluetooth` 后新 bluez
   进程不再报 `kernel lacks bnep-protocol support` / `RFCOMM ... Protocol not supported` —— B-049 真机生效。
-- 其它观察：`elish-init: resize: resize.f2fs missing from initramfs, skipping` 属预期（根已 196 GiB，
-  无需扩容）；`systemctl is-system-running` = degraded，唯一失败单元仍是
+- 其它观察：`elish-init: resize: resize.f2fs missing from initramfs, skipping` 属预期（根已扩到
+  `linux` 分区实际大小，当次 `df` 为 196 GiB，无需扩容）；`systemctl is-system-running` = degraded，唯一失败单元仍是
   `systemd-networkd-wait-online`（既有问题）；dmesg WARNING 数量 11（与上一 boot 相同，均为既有上游告警）。
 - 踩坑记录：`sudo tar -xf modules.tar.zst -C / && depmod -a` 的 `depmod` 会以普通用户运行而
   `Permission denied`，必须写 `sudo depmod -a`；运行中的系统替换模块后，蓝牙 profile 需要
@@ -992,7 +993,7 @@
     wvkbd/qbootctl/图标）+ GPU/DSP 固件 965 文件构建完成。
   - **initramfs**：`build-release.sh` 新增 `EXTRA_DIR`（默认 `<build-dir>/initramfs-extra`），
     放入 f2fs-tools 与 glibc 库 → 首次安装时在挂载 rootfs 前离线 `resize.f2fs` 把根扩到
-    整个 195 GiB；boot.img 仍为零填充（`kernel_size=15,626,610`）。
+    整个 `linux` 分区（本仓库测试设备为 195 GiB 量级，当次采集值）；boot.img 仍为零填充（`kernel_size=15,626,610`）。
   - **安装教程**：新增 `INSTALL.md`（272 行，随 Release 资产发布）：资产清单、安全边界、
     进 fastboot、校验/解压、手工与 `flash-elish.sh` 两种刷入方式、首启改密/WiFi/SSH/扩容、
     验证清单、日常更新、故障恢复、已知限制、源码重建。
@@ -1011,6 +1012,6 @@
   rootfs 构建报告见 `output/20261104/rootfs/BUILD-REPORT.txt`：fsck `[Fail]`=0、
   valid inodes 94,429 = source entries、仅 4 B 超级块差异（预期的扇区字patch）；
   本地 `sha256sum -c SHA256SUMS.txt` 10 个资产全过；Release 远端 digest 与本地一致。
-- 备注：rootfs 镜像 16 GiB，首次开机由 initramfs 自动扩到 195 GiB；默认用户 `magma`、
-  默认密码 `magma`（INSTALL.md 要求首次登录立即修改）；设备当前只刷了新的 boot.img，
-  rootfs 仍是 10/24 手工系统，未重刷（重刷会清空数据，由机主自行决定）。
+- 备注：rootfs 镜像 16 GiB，首次开机由 initramfs 自动扩到 `linux` 分区实际大小（本仓库测试设备约 195 GiB，当次采集值）；默认用户 `magma`、
+  默认口令由构建脚本生成，首次登录必须修改（INSTALL.md 有相应强制步骤）；设备当前只刷了新的 boot.img，
+  rootfs 仍是 10/24 手工系统，未重刷（重刷会清空数据，由使用者自行决定）。

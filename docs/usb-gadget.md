@@ -2,7 +2,7 @@
 
 ## 现象与原因
 
-`usb0` 是 USB Ethernet gadget（`g_ether`），设备断开时可以无 carrier 但仍留有地址和直连路由。`usb-gadget-off.service` 原本只解绑 ConfigFS 的 UDC，没有清理接口地址。当前 UDC 为空时，内核仍可能显示本机 `ttyGS0` / ConfigFS 函数；这些节点不等于 gadget 已绑定到 USB 控制器并暴露给主机。
+`usb0` 是 USB Ethernet gadget（`g_ether`），设备断开时可以无 carrier 但仍留有地址和直连路由。`usb-gadget-off.service` 原本只解绑 ConfigFS 的 UDC，没有清理接口地址。当前 UDC 为空时，内核仍可能显示设备自身的 `ttyGS0` / ConfigFS 函数；这些节点不等于 gadget 已绑定到 USB 控制器并暴露给主机。
 
 ## 修复
 
@@ -39,5 +39,5 @@ systemctl is-enabled usb-net-debug.service
 ## 限制
 
 - 手动启动 USB 网络救援后，服务会重新绑定 gadget 并添加网络地址；正常重启后的关闭单元不会在手动启动之后再次执行。
-- 未连接外部 USB 主机做枚举测试；验证范围是本机 UDC 解绑、接口无地址/路由及服务状态。
+- 未连接外部 USB 主机做枚举测试；验证范围是设备侧 UDC 解绑、接口无地址/路由及服务状态。
 - 文档和配置不保存真实地址、设备 MAC、代理信息或凭据。

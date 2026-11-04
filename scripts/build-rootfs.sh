@@ -774,8 +774,19 @@ apply_timezone() {
 
 apply_users() {
   banner "stage: user magma, locked root, wheel in sudoers"
-  local hash
-  hash=$(openssl passwd -6 -salt <salt> <password>)
+  # 默认口令：优先用环境变量 ELISH_DEFAULT_PASSWORD 指定，否则每次构建随机生成。
+  # 绝不使用固定 salt + 固定口令——那会让镜像的 /etc/shadow 可被离线复现。
+  local hash pass
+  pass="${ELISH_DEFAULT_PASSWORD:-}"
+  if [ -z "$pass" ]; then
+    pass=$(head -c 18 /dev/urandom | base64 | tr -d '/+=' | head -c 16)
+  fi
+  hash=$(openssl passwd -6 -salt "$(head -c 12 /dev/urandom | base64 | tr -d '/+=' | head -c 16)" "$pass")
+  if [ -n "${ELISH_DEFAULT_PASSWORD:-}" ]; then
+    log "default password: from ELISH_DEFAULT_PASSWORD (not printed)"
+  else
+    warn "default password for user magma: $pass  <-- write it down now, it is NOT stored anywhere else"
+  fi
   chmod 0600 "$TREE/etc/shadow" "$TREE/etc/gshadow" 2>/dev/null || true
   python3 - "$TREE" "$hash" <<'PYEOF'
 import sys, os, subprocess

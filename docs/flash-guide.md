@@ -2,12 +2,13 @@
 
 本文件是**唯一的真机刷入操作说明**。所有分区写入只涉及两个分区：
 
-| 分区标签 | 实测设备节点 | 容量 | 内容 | 写入方式 |
+| 分区标签 | 设备节点（**用 `by-partlabel` 查**） | 容量 | 内容 | 写入方式 |
 |---|---|---|---|---|
-| `boot_b` | `/dev/block/sde37` | 393216 扇区 = **192 MiB** | Android boot image v0 | `scripts/flash-elish.sh --boot ...` |
-| `linux` | `/dev/sda36` | ≈195.5 GiB | 根文件系统镜像（f2fs） | `scripts/flash-elish.sh --root ...` |
+| `boot_b` | `/dev/disk/by-partlabel/boot_b`（本仓库测试设备上 → `sde37`） | 393216 扇区 = **192 MiB** = `0xC000000` | Android boot image v0 | `scripts/flash-elish.sh --boot ...` |
+| `linux` | `/dev/disk/by-partlabel/linux`（本仓库测试设备上 → `sda36`） | 以 `fastboot getvar partition-size:linux` 为准（测试设备 ≈195.5 GiB） | 根文件系统镜像（f2fs） | `scripts/flash-elish.sh --root ...` |
 
-实测来源：`docs/decisions.md` D-013（2026-10-24，ssh 只读采集）。本机（Mi Pad 5 Pro）为 **CSOT 面板**
+括号内是**本仓库测试设备的值，你的设备可能不同**：块设备号因设备而异，一律用 `/dev/disk/by-partlabel/` 访问。
+实测来源：`docs/decisions.md` D-013（2026-10-24，ssh 只读采集）。本仓库测试设备（Mi Pad 5 Pro）为 **CSOT 面板**
 （`model = 'Xiaomi Mi Pad 5 Pro (CSOT)'`），因此默认产物 `boot.img` 用
 `sm8250-xiaomi-elish-csot.dtb`；BOE 备选产物是 `boot-boe-alt.img`（文件名即区分）。
 
@@ -24,7 +25,7 @@
 ### a.1 宿主机
 
 ```bash
-command -v fastboot          # 必须存在；缺失时 pacman -S android-tools（本模块不代装）
+command -v fastboot          # 必须存在；缺失时 pacman -S android-tools（本指南不代装）
 fastboot devices             # 必须列出设备
 fastboot getvar current-slot # 期望 a（本项目只写 _b 槽位，见 d.4）
 ```
@@ -35,24 +36,25 @@ fastboot getvar current-slot # 期望 a（本项目只写 _b 槽位，见 d.4）
 ls -l /dev/disk/by-partlabel/ | grep -E 'boot_b|linux'
 ```
 
-期望两行都在：`boot_b -> ../../sde37`、`linux -> ../../sda36`。
+两行都应存在（形如 `boot_b -> ../../sdXN`、`linux -> ../../sdXN`）；**链接目标以你设备上的实际编号为准**，
+不要拿本仓库测试设备的 `sde37`/`sda36` 去比对。
 宿主机侧可只用 fastboot 做只读核对：
 
 ```bash
-fastboot getvar partition-size:boot_b    # 期望 0x6000000（393216 扇区 * 512 = 192 MiB）
-fastboot getvar partition-size:linux
+fastboot getvar partition-size:boot_b    # 期望 0xC000000（393216 扇区 × 512 B = 201,326,592 B = 192 MiB）
+fastboot getvar partition-size:linux     # 期望你的 linux 分区实际大小
 ```
 
 ### a.3 仅当 a.2 里 **没有** `linux` 时才需要人工建分区
 
-> 现状（D-013）：`linux` = `/dev/sda36`，≈195.5 GiB，**已存在**，缺陷 B-016 已关闭。
+> 现状（D-013，**测试设备快照，非通用前提**）：`linux` 指向 `/dev/sda36`、≈195.5 GiB，**已存在**，缺陷 B-016 已关闭。
 > 下面这段是"万一分区丢了"的兜底流程，正常情况下**不要执行**。
 
-`linux` 不是出厂分区，若确实缺失，只能由机主本人从 `userdata` 尾部腾空间后创建。
+`linux` 不是出厂分区，若确实缺失，只能由你从 `userdata` 尾部腾空间后创建。
 这是**不可逆的破坏性操作**：
 
 ```bash
-# ⚠️ 仅作参考；必须由机主本人在设备侧自行执行并自行承担风险
+# ⚠️ 仅作参考；必须由你在设备侧自行执行并自行承担风险
 # ⚠️ 本项目脚本绝不执行该操作，也绝不读写 userdata
 parted /dev/block/sda print             # 只读：确认 userdata 起止扇区
 parted /dev/block/sda unit s print      # 记录 userdata 起始 S 与结束 E
@@ -85,7 +87,7 @@ mkfs.f2fs -f \
 | 参数 | 含义 | 依据 |
 |---|---|---|
 | `-f` | 强制覆盖 | `-f force overwrite of the existing filesystem`；重跑必需 |
-| `-l linux` | 卷标 = 分区标签 | 与 PARTLABEL=linux 一致，便于 fstab 用 `LABEL=linux` |
+| `-l linux` | 卷标 = 分区标签 | 与 PARTLABEL=linux 一致；fstab 用 `PARTLABEL=linux`（`LABEL=linux` 是等价写法） |
 | `-b 4096` | 块大小 4096 | `[default:4096]`，与 UFS 4096 逻辑扇区对齐 |
 | `-t 0` | 不发送 discard | `-t 0: nodiscard, 1: discard [default:1]`；镜像上无意义且引入非确定性 |
 | `-O extra_attr,inode_checksum,sb_checksum` | 额外属性 + 校验和 | 1.17.0 实测合法（`-O nonsense` 报 `Error: Wrong features nonsense`） |
@@ -94,12 +96,12 @@ mkfs.f2fs -f \
 **禁用 compression**：`-O` 里不写 `compression` 即为禁用。实测 `-O compression` 单独用会报
 `compression feature should always be enabled with extra attr feature`，取反写法 `-O ^compression` **不被支持**。
 
-**扇区大小（待 rootfs 模块确认）**：`mkfs.f2fs` 的扇区大小取自底层设备。本机在普通文件上即使加 `-w 4096`
+**扇区大小（未验证）**：`mkfs.f2fs` 的扇区大小取自底层设备。在构建主机的普通文件上即使加 `-w 4096`
 仍输出 `Info: sector size = 512`；要 4096 扇区镜像需要 4096 逻辑扇区的后端（`losetup -b 4096`，需 root）。
 
 ### b.2 首启后扩容（设备侧，人工执行）
 
-镜像可能小于分区（`linux` ≈195.5 GiB），首启进入系统后**手动**扩到分区大小：
+镜像可能小于分区（`linux` 分区大小以 `fastboot getvar partition-size:linux` 为准），首启进入系统后**手动**扩到分区大小：
 
 ```bash
 # 设备上执行（rootfs 需自带 f2fs-tools；脚本不会自动做这一步）
@@ -113,18 +115,23 @@ df -h /
 
 ---
 
-## c) `/etc/fstab` 挂载选项建议（**待 rootfs 模块最终确定**）
+## c) `/etc/fstab`
+
+现状（仓库 `configs/rootfs/etc/fstab`，与设备 `/etc/fstab` 一致）：
 
 ```fstab
-LABEL=linux  /  f2fs  defaults,noatime,nodiratime,background_gc=sync  0 1
+PARTLABEL=linux  /  f2fs  rw,relatime,background_gc=on,inline_xattr,inline_dentry,nodiscard,errors=remount-ro  0 1
 ```
 
-- `noatime,nodiratime`：减少 UFS 写放大；`background_gc=sync`：GC 同步完成，延迟可预测。
-- 不加 `compress_algorithm=`/`compress_extension=`：与 b) 的"压缩禁用"一致。
-- 不加 `discard`：改用 `fstrim.timer`，避免持续 TRIM 抖动。
+- `PARTLABEL=linux`：按 GPT 分区标签定位根，分区重建/重新格式化后仍然有效。
+- `relatime`：通用 VFS atime 语义（非 f2fs 专有选项），避免每次读都回写 atime。
+- `background_gc=on`：f2fs 默认值，显式写出便于审阅。
+- `inline_xattr` / `inline_dentry`：xattr 与目录项写进 inode 块，减少小文件/目录的额外块写。
+- `nodiscard`：不在每次 segment 清理时发实时 TRIM，改用已启用的 `fstrim.timer`，避免持续抖动。
+- `errors=remount-ro`：致命错误时重挂只读（内核默认是 `continue`）。
+- 不加 `compress_algorithm=`/`compress_extension=`：内核没有 `CONFIG_F2FS_FS_COMPRESSION`，镜像也未开压缩特性。
 
-> ⚠️ 当前 `configs/rootfs/etc/fstab` 还是 `ext4`（rootfs 模块尚未切换到 f2fs），与本指南不一致，
-> 需要 rootfs 模块跟进；`/init` 的 f2fs→ext4 兜底能容忍这种不一致，但不是长期方案。
+`/init` 仍按 f2fs → ext4 的顺序尝试挂载（兼容 ext4 根镜像），但本项目产出的根文件系统是 f2fs。
 
 ---
 
@@ -214,7 +221,7 @@ fastboot reboot
 ```
 
 > `flash-elish.sh` **不执行** `--set-active`：它只允许 `flash`（boot_b/linux）、`getvar`、
-> `reboot-bootloader` 与被门控的 `erase dtbo_b`。需要脚本支持请让 dispatcher 另发裁决。
+> `reboot-bootloader` 与被门控的 `erase dtbo_b`。要脚本自动 `--set-active` 属策略扩张，需先明确裁决。
 > `boot_b` 起不来时：`fastboot --set-active=a` 回 a 槽救援（a 槽本项目不改不擦）。
 
 ### d.5 手工完整序列（与脚本等价）
@@ -233,7 +240,7 @@ fastboot reboot
 ### d.6 重打 initramfs（`--modules` + `--firmware`）
 
 内核模块产物在 `output/<date>/kernel/modules.tar.zst` 内，路径为
-`lib/modules/<krel>/`（本机内核 release 是 `7.2.0`，不要写成 `7.2.0_git20261010`），
+`lib/modules/<krel>/`（本内核 release 是 `7.2.0`，不要写成 `7.2.0_git20261010`），
 且因 `MODULE_COMPRESS_ALL=y` + `MODULE_COMPRESS_ZSTD=y` 落地为 `*.ko.zst`。
 
 initramfs 需要两类输入，缺一不可：
@@ -289,7 +296,7 @@ BUILD_ROOT=$PWD/../.build scripts/build-initramfs.sh \
 
 ## f) 真机回填清单（刷完必须回报到 `bug.md`）
 
-1. **分区设备名**：`ls -l /dev/disk/by-partlabel/` 中 `boot_b`/`linux` 指向的节点（核对 `sde37`/`sda36` 是否仍成立）。
+1. **分区设备名**：`ls -l /dev/disk/by-partlabel/` 中 `boot_b`/`linux` 指向的节点（记录你设备上这两个标签实际指向的节点，不要套用别人的 `sdeNN`/`sdaNN`）。
 2. **fastboot 容量**：`fastboot getvar partition-size:boot_b`、`:linux` 的原始输出。
 3. **镜像体积**：`ls -l output/<date>/boot/boot.img` 与 192 MiB 的占比。
 4. **fsck**：`fsck.f2fs -f /dev/disk/by-partlabel/linux` 完整输出与退出码；开机后 `dmesg | grep -i f2fs`。
@@ -318,9 +325,10 @@ quiet rootwait root=PARTLABEL=linux console=tty0 loglevel=4 systemd.gpt_auto=no
   与 `/init` 里"等 `/dev/disk/by-partlabel/linux` 出现"的逻辑同源。
 - `console=tty0` + `loglevel=4`：屏幕就是日志通道（设备上没有 adb）。
 
-- **已实测（本机）**：`mkfs.f2fs` 1.17.0 的 `-h` 选项表；上述命令可格式化 64 MiB 镜像（`Info: format successful`）；
+- **已实测（构建主机）**：`mkfs.f2fs` 1.17.0 的 `-h` 选项表；上述命令可格式化 64 MiB 镜像（`Info: format successful`）；
   `fsck.f2fs -f` 返回 0；`-O compression` / `-O ^compression` 的真实报错。
-- **已实测（设备，D-013）**：`boot_b` = `sde37` / 192 MiB；`linux` = `sda36` / ≈195.5 GiB；CSOT 面板。
+- **已实测（示例设备快照，D-013）**：`boot_b` → `sde37` / 192 MiB；`linux` → `sda36` / ≈195.5 GiB；CSOT 面板。
+  这是当次采集的示例值，块设备号与分区大小因设备而异。
 - **已实测（真机，2026-10-24）**：真实内核与 DTB 打包、`fastboot` 刷写、开机到 `/sbin/init`、`resize.f2fs`。
-- **2026-11-04 复核**：镜像结构、initramfs 内容、模块/config 差异已核对；新 boot.img 尚未刷机复验（见 bug.md B-057/B-058）。
+- **已知限制**：镜像结构与 initramfs 内容已核对；新 `boot.img` 的实际刷机结果待验证（见 bug.md B-057/B-058）。
 - `linux` 分区的创建（缩减 `userdata`）**永远不由本项目脚本执行**。

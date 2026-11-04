@@ -20,12 +20,12 @@
 | `configs/rootfs/packages.list` | — | `+ccache` | 镜像重建时与 BUILDENV 保持一致 |
 | 全局 `-O3` / LTO / lld | — | 不启用 | `-O3` 实测更慢；LTO 在 7.4 GiB 上风险高；lld 为可选项 |
 
-> 重要边界：这些参数只影响**本机重新编译**的包。从 ALARM 仓库安装的预编译包仍是通用
+> 重要边界：这些参数只影响**构建主机上重新编译**的包。从 ALARM 仓库安装的预编译包仍是通用
 > armv8-a 二进制，不受影响。
 
-## 2. 先纠正拓扑：本机不是 8×Cortex-A55
+## 2. 先纠正拓扑：构建主机不是 8×Cortex-A55
 
-用户提供的 `cpu-info` 输出（cpuinfo r843）把 8 个核全报成 Cortex-A55，与内核实测不符：
+`cpu-info`（cpuinfo r843）的输出把 8 个核全报成 Cortex-A55，与内核实测不符：
 
 | 证据源 | cpu0-3 | cpu4-7 |
 |---|---|---|
@@ -72,7 +72,7 @@ fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm l
 
 - GCC 16.1.1 的 `-mcpu` 双核名只枚举到 `cortex-a76.cortex-a55`，没有
   `cortex-a77.cortex-a55`（实测直接报 `unknown value`）；
-- 单用 `-mcpu=cortex-a77` 不会启用 crypto（GCC 的 A77 定义里没有），而本机八核都有
+- 单用 `-mcpu=cortex-a77` 不会启用 crypto（GCC 的 A77 定义里没有），而构建主机八核都有
   aes/sha2；
 - 用 `-march=...+mtune=cortex-a77` 把每个扩展显式写出来，便于逐条对照 `/proc/cpuinfo`
   审计；`-mtune` 只影响调度，不改变 ISA。
@@ -111,7 +111,7 @@ LSE 原子负载（8 线程 × 800 万次 relaxed `fetch_add`，wall time）：
 | 本配置 | 5.25 / 5.34 / 5.49 s |
 
 `-march=armv8-a` 下 GCC 生成 outline atomics（libgcc 运行时派发、函数调用）；直接 `+lse`
-后是单条 `ldadd`。本机所有核都支持（Features `atomics`），多线程 malloc / 引用计数类负载
+后是单条 `ldadd`。构建主机所有核都支持（Features `atomics`），多线程 malloc / 引用计数类负载
 明显更快（本微基准 ~1.7x）。
 
 ### 3.4 刻意没开的
@@ -122,7 +122,7 @@ LSE 原子负载（8 线程 × 800 万次 relaxed `fetch_add`，wall time）：
 | `-O3` | 实测更慢（见上） |
 | `-fomit-frame-pointer` | 仓库需要 profile/debug；保留现有 hardening 组合（帧指针 + stack protector + FORTIFY=3 + stack-clash），代价约 1–3% |
 | lld / mold 作为默认链接器 | `ld.lld` 23 已装，实测接受现有 LDFLAGS（`-z pack-relative-relocs`、`--sort-common` 均 OK）；个别包对 linker script 的兼容性未知，默认仍用 bfd。想提速可自行在单包环境 `LDFLAGS+=" -fuse-ld=lld"` 验证 |
-| i8mm / bf16 / sve / pauth / fp16fml | 本机 HWCAP 没有，加了会在 A55/A77 上出非法指令 |
+| i8mm / bf16 / sve / pauth / fp16fml | 构建主机 HWCAP 没有，加了会在 A55/A77 上出非法指令 |
 
 ## 4. 打包与构建吞吐
 
@@ -137,7 +137,7 @@ LSE 原子负载（8 线程 × 800 万次 relaxed `fetch_add`，wall time）：
 | `zstd -c -T0`（stdin，makepkg 实际用法） | 0.62 s | 29,371,375 B |
 | `zstd -c -T0 <file>` | 0.62 s | 29,371,375 B |
 
-→ 打包快 **~38x**；包体积大 ~49%（zstd level 3 换速度，本机 172 GiB 空闲，值得）。pacman
+→ 打包快 **~38x**；包体积大 ~49%（zstd level 3 换速度，构建主机 172 GiB 空闲，值得）。pacman
 7.1.0 原生支持 `.pkg.tar.zst`（`pacman -Qip` 已验）。
 
 ### 4.2 ccache
@@ -188,7 +188,7 @@ exit $rc
 
 `MAKEFLAGS="-j$(nproc)"` = -j8 不变。7.4 GiB 内存 + 10 GiB zram（lz4）足够普通包；巨型
 C++/Rust 包若内存紧张，单包用 `MAKEFLAGS=-j4`（经 `makepkg.conf` 覆盖或用
-`options=(!makeflags)`）。不建议为散热降 -j：本机靠 EAS/thermal 自调频，不锁频。
+`options=(!makeflags)`）。不建议为散热降 -j：构建主机靠 EAS/thermal 自调频，不锁频。
 
 ## 5. 部署与回滚
 
@@ -202,8 +202,7 @@ C++/Rust 包若内存紧张，单包用 `MAKEFLAGS=-j4`（经 `makepkg.conf` 覆
 # 宿主仓库根目录
 tar czf /tmp/makepkg-conf.tar.gz -C configs/rootfs \
   etc/makepkg.conf etc/makepkg.conf.d/fortran.conf etc/makepkg.conf.d/rust.conf
-cat /tmp/makepkg-conf.tar.gz | dbclient -y -i ~/.ssh/dropbear_ed25519_host_key magma@<device-ip> \
-  'cat > /tmp/makepkg-conf.tar.gz'
+cat /tmp/makepkg-conf.tar.gz | ssh magma@<device-ip> 'cat > /tmp/makepkg-conf.tar.gz'
 
 # 设备上（magma 有 NOPASSWD sudo）
 TS=$(date +%Y%m%d-%H%M%S)
@@ -244,9 +243,10 @@ Rust 示例在 cpu2 上均 exit 0（无 SIGILL）。
 
 ## 7. 已知限制
 
-- 只影响**本机重建**的包；ALARM 预编译包不受影响。
-- `-march=...+crypto` 绑定本机 HWCAP；换内核/换机型务必重看 `/proc/cpuinfo` Features。
-- `cpu-info`（r843）在本机误报 8×A55，不要用它生成 flags。
+- 只影响**构建主机上重建**的包；ALARM 预编译包不受影响。
+- `-march=...+crypto` 绑定构建主机的 HWCAP；换内核/换机型务必重看 `/proc/cpuinfo` Features。
+- 本文所有实测耗时（CoreMark / lz4 / makepkg / 打包）都来自这台 8 核构建主机，绝对数值不可直接套用到别的机器，可比的是相对差异。
+- `cpu-info`（r843）在构建主机上误报 8×A55，不要用它生成 flags。
 - zstd 包比 xz 大（本语料 +49%）；磁盘紧时单包可临时改回 `PKGEXT=.pkg.tar.xz`。
 - LTO 默认关；单包 `options=(lto)` 时 `-flto=4` 仍可能吃内存或失败，大包建议 `!lto`。
 - ccache 不加速链接、不加速 Rust（未接 `RUSTC_WRAPPER`）。

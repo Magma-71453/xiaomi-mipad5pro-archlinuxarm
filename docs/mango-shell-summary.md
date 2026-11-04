@@ -10,13 +10,14 @@
 
 Xiaomi Pad 5 Pro（`elish`，Arch Linux ARM，mango 0.18.3）现在是**纯触摸友好的浮动窗口桌面**：
 
-- 屏幕：1600×2560@120Hz 面板，旋转 90° 顺时针 + 2 倍缩放 → **1280×800 逻辑**
+- 屏幕：1600×2560@120Hz 面板，旋转 90° 顺时针 + 2 倍缩放 → **1280×800 逻辑**（**本仓库测试机型参数**；
+  其它设备用 `mango-dispatch get all-monitors` 查本机的逻辑分辨率与 scale）
 - 所有窗口**默认悬浮**，圆角 12、阴影小、金边
 - 底部**居中磨砂 dock**（5 个图标，可配置文件改）
 - 触摸手势：3 指左右切 tag、3 指上滑 overview
 - **编辑模式**：dock 指针按钮进入 → 点窗口置顶 → 底边 × ○ ✋ + 四角缩放抓手 → 右上「完成」退出
 - 屏幕键盘（居中 680 宽、停在 dock 上沿）、音量键 + OSD、图片壁纸
-- **没有** mangobar / waybar / 平铺 / 整理模式 / 自绘标题栏
+- 状态栏是 **waybar**（现役）；**没有** mangobar / 平铺 / 整理模式 / 自绘标题栏
 
 ---
 
@@ -41,6 +42,7 @@ agetty --autologin magma (tty1)
           └─ exec_once=/usr/local/bin/mango-shell-start    ← 唯一入口
               ├─ mango-touchd          触摸手势（evdev）
               ├─ (mango-keys 已移除，见 B-042)
+              ├─ waybar                顶部状态栏（pkill 旧实例后 setsid 拉起）
               ├─ mango-dock            居中磨砂 dock
               ├─ mango-osd             音量 OSD
               ├─ mango-place           新窗口尺寸 + 居中 + 级联
@@ -58,6 +60,7 @@ agetty --autologin magma (tty1)
 | `mango-actions` | C + cairo | 编辑模式：全屏 overlay 覆盖层，选窗/三钮/四角缩放；`focusid` 置顶 |
 | `mango-place` | python | 新浮动窗口 resize 到 11/16×7/10、`centerwin`、级联偏移 26px |
 | `mango-touchd` | python | 3 指手势：左右切 tag、上滑 overview |
+| `waybar` | C++/GTK3 | 顶部状态栏（**现役**，配置在 `configs/rootfs/home/magma/.config/waybar/`）；`mango-shell-start` 先 `pkill -x waybar` 再 `setsid waybar &` 拉起 |
 | ~~`mango-keys`~~ | python | 已移除：evdev 轮询长期吃满一核（B-042） |
 | `mango-volume` | sh | ALSA 8 个功放 `*Digital PCM`，±5%，mute=记值设 0% |
 | `mango-osk-toggle` | sh | wvkbd 开关（`WVKBD_CENTER_W` + `WVKBD_BOTTOM_MARGIN=82`） |
@@ -88,6 +91,9 @@ overlay/wvkbd           屏幕键盘（按需）
 ---
 
 ## 4. `/etc/mango/config.conf` 增量
+
+> 下面的 `monitor_rule` 里 1600×2560 / 120Hz / scale 2 是**本仓库测试机型参数**；
+> 换机型先用 `mango-dispatch get all-monitors` 查本机 mode 再改。
 
 ```ini
 touch_enable=1
@@ -142,7 +148,7 @@ dock 指针按钮 → 淡遮罩 + 右上「完成」：
 
 | # | 现象 | 根因 | 修法 |
 |---|---|---|---|
-| 1 | 重启后"配置全没了" | 会话 `XDG_RUNTIME_DIR` 从 `~/.xdg` 变成 `/run/user/1000`，脚本硬编码旧路径，连到僵尸 socket | 所有守护进程动态发现 runtime dir，`~/.xdg` 仅兜底 |
+| 1 | 重启后"配置全没了" | 会话 `XDG_RUNTIME_DIR` 从 `~/.xdg` 变成 logind 的 `/run/user/<uid>`（测试设备为 `1000`），脚本硬编码旧路径，连到僵尸 socket | 所有守护进程动态发现 runtime dir，`~/.xdg` 仅兜底 |
 | 2 | fish 里编译 dock 报一屏 undefined reference | **fish 的命令替换不按空格切分**，`$(pkg-config ...)` 变成一个参数 | 用 `sh build-dock.sh`，或 `... \| string split " "` |
 | 3 | 屏幕键盘点不出来 | 脚本里裸写 `wvkbd-mobintl`，桌面 PATH 没有 `/usr/local/bin` | 改绝对路径 |
 | 4 | 键盘压住 dock | layer margin 底部为 0 | wvkbd 补丁 `WVKBD_BOTTOM_MARGIN=82` |
@@ -187,7 +193,8 @@ zwlr_layer_surface_v1_set_margin(layer_surface, 0, 0, bottom_margin,
 ### 7.3 其它
 
 - `swaybg` / `grim` / `kitty` / `firefox` / `rofi`：pacman 或源码构建（`grim` 为源码）
-- mangobar：已删除
+- waybar：pacman 安装，现役状态栏（配置见 §3.2）
+- mangobar（自写 C 状态栏）：已删除，**不要恢复**；状态栏用 waybar
 
 ---
 
@@ -196,9 +203,9 @@ zwlr_layer_surface_v1_set_margin(layer_surface, 0, 0, bottom_margin,
 ```sh
 export XDG_RUNTIME_DIR=/run/user/$(id -u); export WAYLAND_DISPLAY=wayland-0
 
-ps -eo args | grep -E 'mango-(dock|osd|actions|place|touchd|keys)' | grep -v grep
-mmsg get all-layers            # wallpaper / mango-dock（+ 按需 actions/wvkbd）
-mmsg get all-monitors          # 1280x800 scale 2
+ps -eo args | grep -E 'mango-(dock|osd|actions|place|touchd)|waybar' | grep -v grep
+mmsg get all-layers            # wallpaper / waybar / mango-dock（+ 按需 actions/wvkbd）
+mmsg get all-monitors          # 本仓库测试机型期望 1280x800 scale 2（换机型以实际为准）
 mango -p -c /etc/mango/config.conf; echo rc=$?
 mango-volume up; sleep 0.5; mmsg get all-layers | grep -c mango-osd   # 1
 mango-osk-toggle; sleep 1;  mmsg get all-layers | grep -c wvkbd      # 1
@@ -208,7 +215,9 @@ mango-osk-toggle; sleep 1;  mmsg get all-layers | grep -c wvkbd      # 1
 
 ## 9. 已知问题 / 未做
 
-1. **dock 无看门狗**：崩溃后不会自动重启，需 `mango-shell-start` 恢复
+1. **dock 由 `mango-dock-super` 循环盯着**：`mango-shell-start` 里以 `sh -c 'while :; do …; done'` 启动，
+   退出 1 s 后自动重启，stderr 落 `$XDG_RUNTIME_DIR/mango-dock.log`。手工 `setsid mango-dock` 起的实例没有这层保护；
+   若反复崩溃去看那份日志（详见 `dock.md` §7 第 3 条）。
 2. **编辑模式的四角缩放在超小窗口**（< 2×抓手）时抓手会重叠，逻辑上仍可用但不好点
 3. **wvkbd 补丁只在设备源码树**（`~/elish-build/src/wvkbd/main.c`），换机构建需重新打
 4. **没有触屏拖窗手势**（编辑模式的 ✋ 之外）：日常拖窗仍要 `SUPER`+左键

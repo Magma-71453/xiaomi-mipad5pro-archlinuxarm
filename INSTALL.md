@@ -1,6 +1,6 @@
 # Xiaomi Mi Pad 5 Pro（xiaomi-elish）Arch Linux ARM 安装指南
 
-> 适用 Release：**26/11/04**（2026-11-04 构建）  
+> 适用 Release：**26/11/04**（2026-11-04 构建），**以 Release 页最新标签为准**——标签变了但步骤不变  
 > 设备：Xiaomi Mi Pad 5 Pro（`xiaomi-elish`，SM8250；CSOT 或 BOE 面板）  
 > 本指南覆盖：从 fastboot 开始 → 刷 rootfs/boot → 首次开机 → 首启配置 → 验证 → 日常更新 → 故障恢复。
 
@@ -19,7 +19,8 @@
 | `mango-0.18.3-aarch64.tar.zst` | MangoWM 运行时（已内置在 rootfs） | 可选 |
 | `SHA256SUMS.txt` / `MANIFEST` | 校验和与产物清单 | ✅ 建议 |
 
-> 默认凭据：用户 **magma** / 密码 **magma**，root 锁定；**首次登录后必须立刻改密码**。
+> 默认用户与默认口令由 `scripts/build-rootfs.sh` 生成（用户 `magma`，root 锁定）。
+> **仓库不记录口令明文**——请以构建脚本输出 / Release 说明为准；**首次登录后必须立刻 `passwd` 修改**。
 
 ---
 
@@ -33,7 +34,7 @@
 **绝对不要**：
 
 - `fastboot flash` / `erase` 任何其它分区（`boot_a`、`dtbo_b`、`system_b`、`vendor_boot`、`super`、`userdata`、`persist`、`modem` …）；
-- `fastboot erase` 任何分区（唯一历史例外是机主本人显式确认的一次性 `erase dtbo_b`，见 `docs/decisions.md` D-009）；
+- `fastboot erase` 任何分区（默认不接受任何 `erase`；确需擦除 `dtbo_b` 见 `docs/decisions.md` D-009）；
 - 刷错面板：**CSOT 设备刷 `boot.img`，BOE 设备刷 `boot-boe-alt.img`**，刷错会黑屏（可重刷恢复）。
 
 > 刷 `linux` 分区 = **清空当前系统与用户数据**，务必先备份。
@@ -48,14 +49,14 @@
 sudo pacman -S --needed android-tools zstd
 ```
 
-2. 设备**已解锁 bootloader**（这台设备已解锁；未解锁的设备无法按本指南刷入）。
+2. 设备**必须已解锁 bootloader**，未解锁无法按本指南刷入。
 3. 一根能传数据的 USB 线，连接设备与主机。
 4. 进入 fastboot：**长按电源键约 15 秒关机，再按住「音量下 + 电源」**直到出现 fastboot 界面。
 
 ```sh
 fastboot devices          # 必须列出设备，例如 <device-serial>  fastboot
 fastboot getvar current-slot   # 期望输出 a（本项目只写 _b 槽位）
-fastboot getvar partition-size:boot_b   # 期望 0xC000000（192 MiB）
+fastboot getvar partition-size:boot_b   # 本机实测 0xC000000（192 MiB），以你的 getvar 实际输出为准
 ```
 
 ---
@@ -116,12 +117,12 @@ OUTPUT_DATE=20261104 scripts/flash-elish.sh \
 
 ## 6. 首次开机
 
-1. 设备自动重启进入系统；`tty1` 自动登录用户 `magma` 并启动 MangoWM 会话（约 2 分钟后进入桌面，`elish-bt-autoconnect` 会做几轮蓝牙重连，属正常）。
-2. 开机时 initramfs 会检测到根分区比镜像大，**自动执行 `resize.f2fs` 把根扩到整个 195 GiB**；`dmesg` 里应看到：
+1. 设备自动重启进入系统；`tty1` 自动登录默认用户（用户名见 `scripts/build-rootfs.sh`，本镜像为 `magma`）并启动 MangoWM 会话（实测约 2–3 分钟进入桌面，`elish-bt-autoconnect` 会做几轮蓝牙重连，属正常）。
+2. 开机时 initramfs 会检测到根分区比镜像大，**自动执行 `resize.f2fs` 把根扩到 `linux` 分区的末尾**；`dmesg` 里应看到：
 
 ```sh
 sudo dmesg | grep -iE "elish-init: resize|growing f2fs"
-df -h /            # 期望可用约 170+ GiB
+df -h /            # 期望可用空间 ≈ 你的 linux 分区容量（对照 findmnt /）
 ```
 
 3. 如果根仍是 16 GiB（例如用了旧 boot.img），重新刷入本 Release 的 `boot.img` 后再重启即可自动扩容。
@@ -133,7 +134,7 @@ df -h /            # 期望可用约 170+ GiB
 ### 7.1 修改默认密码（必须）
 
 ```sh
-passwd             # 当前密码 magma；改成你自己的
+passwd             # 先输入构建脚本生成的当前默认口令，再改成你自己的
 ```
 
 ### 7.2 连接 Wi-Fi
@@ -141,7 +142,7 @@ passwd             # 当前密码 magma；改成你自己的
 ```sh
 nmcli device status
 nmcli device wifi connect "<wifi-ssid>" password "<wifi-password>"
-ip -br addr show wlp1s0
+ip -br addr show wlp1s0      # ath11k 固定用这个名字；接口名以 ip -br link 为准
 ```
 
 > Wi-Fi/BT 的 MAC 地址会由 `wlp-mac.service` / `elish-bt-mac.service` 按设备序列号派生，无需手工设置。
@@ -150,7 +151,7 @@ ip -br addr show wlp1s0
 
 ```sh
 sudo systemctl enable --now sshd
-ssh magma@<device-ip>      # 主机 ssh 到设备；首次连接确认指纹
+ssh <用户名>@<device-ip>    # 主机 ssh 到设备；首次连接确认指纹
 ```
 
 ### 7.4 声音/亮度/桌面自检
@@ -169,7 +170,7 @@ brightnessctl -l                    # 背光设备
 |---|---|---|
 | 内核版本 | `uname -v` | `Wed Nov 4 15:00:07 CST 2026`（本 Release） |
 | cmdline | `cat /proc/cmdline` | 含 `systemd.gpt_auto=no`、`root=PARTLABEL=linux` |
-| 根分区 | `findmnt /` | `f2fs`，约 195 GiB |
+| 根分区 | `findmnt /` | `f2fs`，容量 = 你的 `linux` 分区大小 |
 | GPU 固件 | `sudo dmesg \| grep -i a650` | `loaded qcom/a650_sqe.fw` / `a650_gmu.bin` |
 | 显示 | `ls /dev/dri/` | `card0`、`renderD128` |
 | 桌面 | `pgrep -a -x mango` | `/usr/bin/mango` 在跑 |
@@ -269,4 +270,4 @@ BUILD_ROOT=../.build OUT_DIR=output/<date>/rootfs scripts/build-rootfs.sh \
 
 ---
 
-*最后更新：2026-11-04（对应 Release 26/11/04）。遇到本指南未覆盖的问题，请附 `sudo dmesg`、`journalctl -b` 与复现步骤记录到 `bug.md`。*
+*最后更新：2026-11-04（对应 Release 26/11/04；实际以 Release 页最新标签为准）。遇到本指南未覆盖的问题，请附 `sudo dmesg`、`journalctl -b` 与复现步骤记录到 `bug.md`。*
