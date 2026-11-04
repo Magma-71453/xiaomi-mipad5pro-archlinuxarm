@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # =============================================================================
-# build-release.sh — 本机构建 boot.img 并推送到 GitHub Release
+# build-release.sh — 本机构建 boot / rootfs / mango 并推送到 GitHub Release
 #
-#   一次跑完：内核 -> GPU 固件 -> initramfs（面板驱动 + GPU 固件）-> CSOT/BOE 两份 boot.img -> 自校验
+#   一次跑完：内核 -> GPU 固件 -> initramfs（面板驱动 + GPU 固件 + 首启扩容工具）
+#             -> CSOT/BOE 两份 boot.img
+#             -> 打包 output/<date>/ 里已有的 rootfs / mango / INSTALL.md -> 自校验
 #             -> output/<YYYYMMDD>/（仓库约定 + MANIFEST）-> gh release（标签 yy/mm/dd）
 #
 #   产物落位遵循 AGENTS.md 硬约束：构建产物只放 output/<YYYYMMDD>/ 并写 MANIFEST；
@@ -23,6 +25,7 @@
 #   --repo OWNER/REPO 发布目标仓库（默认取 git remote origin）
 #   --build-dir DIR   中间树目录（默认仓库上一级 .build，不能放仓库内）
 #   FW_DIR=DIR        GPU 固件目录（默认 <build-dir>/firmware/elish-gpu；缺失时自动下载）
+#   EXTRA_DIR=DIR     initramfs 额外文件树（默认 <build-dir>/initramfs-extra；放 f2fs-tools/glibc，首启扩容用）
 #   -h, --help
 #
 # 依赖：clang lld llvm-* bc dtc flex bison pahole make python3 perl zstd cpio
@@ -49,7 +52,7 @@ DIST=$BUILD/dist
 LOGS=$BUILD/logs
 FWDIR=${FW_DIR:-$BUILD/firmware/elish-gpu}
 
-usage() { sed -n '2,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,31p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 die()   { printf 'error: %s\n' "$*" >&2; exit 1; }
 log()   { printf '[build-release] %s\n' "$*"; }
 stage() { printf '\n[build-release] ===== %s =====\n' "$*"; }
@@ -207,8 +210,16 @@ fi
 
 # ------------------------------------------------------------ 4) initramfs ----
 stage "打 initramfs"
+# 额外工具树：f2fs-tools（首次安装时在挂载 rootfs 前离线 resize.f2fs 扩容到整个 195 GiB）
+# 及其依赖的 glibc 库。设备旧 initramfs 一直带这些文件，2026-11-04 重构建时漏掉过一次。
+EXTRA_ARGS=()
+EXTRA_DIR=${EXTRA_DIR:-$BUILD/initramfs-extra}
+if [ -d "$EXTRA_DIR" ]; then
+    EXTRA_ARGS=(--extra "$EXTRA_DIR")
+    log "initramfs extra: $EXTRA_DIR ($(find "$EXTRA_DIR" -type f | wc -l) files)"
+fi
 BUILD_ROOT=$BUILD OUTPUT_DATE=$DATE bash "$REPO/scripts/build-initramfs.sh" \
-    --busybox "$BB" --modules "$MODARG" --firmware "$FWDIR" \
+    --busybox "$BB" --modules "$MODARG" --firmware "$FWDIR" "${EXTRA_ARGS[@]}" \
     --out "$BOUT/initramfs.cpio.gz"
 
 # ------------------------------------------------ 5) 两份 boot.img + 自校验 --
@@ -237,12 +248,46 @@ stage "生成 MANIFEST / SHA256SUMS / Release 资产"
 bash "$REPO/scripts/collect-manifest.sh" --date "$DATE" | tail -5
 
 rm -rf "$DIST"; mkdir -p "$DIST"
+ASSETS="boot.img boot-boe-alt.img initramfs.cpio.gz modules.tar.zst"
 cp "$BOUT/boot.img"          "$DIST/boot.img"
 cp "$BOUT/boot-boe-alt.img"  "$DIST/boot-boe-alt.img"
 cp "$BOUT/initramfs.cpio.gz" "$DIST/initramfs.cpio.gz"
 cp "$KOUT/modules.tar.zst"   "$DIST/modules.tar.zst"
 cp "$LOGS"/*.verify.log      "$DIST/"
-( cd "$DIST" && sha256sum boot.img boot-boe-alt.img initramfs.cpio.gz modules.tar.zst > SHA256SUMS.txt )
+
+# rootfs / mango / 安装教程：先在 output/<date>/ 构建好，这里只负责打包。
+# GitHub Release 单文件上限 2 GiB，f2fs 原始镜像以 zstd 压缩后上传（安装时先 zstd -d）。
+ROOTFS_TAR=$OUT/rootfs/ArchLinuxARM-aarch64-elish-rootfs.tar.zst
+ROOTFS_IMG=$OUT/rootfs/linux-rootfs-f2fs.img
+ROOTFS_IMG_ZST=$DIST/linux-rootfs-f2fs.img.zst
+MANGO_TAR=$OUT/mango/mango-0.18.3-aarch64.tar.zst
+if [ -f "$ROOTFS_TAR" ]; then
+    cp "$ROOTFS_TAR" "$DIST/"
+    ASSETS="$ASSETS ArchLinuxARM-aarch64-elish-rootfs.tar.zst"
+else
+    log "警告：未找到 $ROOTFS_TAR（rootfs 未构建），本次 Release 不含 rootfs 归档"
+fi
+if [ -f "$ROOTFS_IMG" ]; then
+    log "压缩 f2fs 镜像（GitHub 单资产上限 2 GiB）: $ROOTFS_IMG -> $ROOTFS_IMG_ZST"
+    zstd -q -T0 -3 -f -o "$ROOTFS_IMG_ZST" "$ROOTFS_IMG"
+    ASSETS="$ASSETS linux-rootfs-f2fs.img.zst"
+elif [ -f "$ROOTFS_IMG_ZST" ]; then
+    ASSETS="$ASSETS linux-rootfs-f2fs.img.zst"
+fi
+if [ -f "$MANGO_TAR" ]; then
+    cp "$MANGO_TAR" "$DIST/"
+    ASSETS="$ASSETS mango-0.18.3-aarch64.tar.zst"
+fi
+if [ -f "$REPO/INSTALL.md" ]; then
+    cp "$REPO/INSTALL.md" "$DIST/INSTALL.md"
+    cp "$REPO/INSTALL.md" "$OUT/INSTALL.md"
+    ASSETS="$ASSETS INSTALL.md"
+fi
+if [ -f "$OUT/MANIFEST" ]; then
+    cp "$OUT/MANIFEST" "$DIST/MANIFEST"
+    ASSETS="$ASSETS MANIFEST"
+fi
+( cd "$DIST" && sha256sum $ASSETS > SHA256SUMS.txt )
 
 # 产物必须能追溯到确切源码状态：构建时工作树有未提交改动就标记 +dirty，
 # 避免出现"说明写 commit A、实际用了未提交修复"的情况（2026-11-04 教训）。
@@ -261,13 +306,29 @@ KERNEL_TAG=${CFG_FILE##*/config-}
     printf -- '- 内核源码: %s（LLVM=1 交叉编译；pmaports config + configs/kernel/fragments）\n' "$KERNEL_TAG"
     printf -- '- 构建提交: %s\n' "$(release_commit)"
     printf -- '- 内核补丁: configs/kernel/patches/*.patch（已全部打进内核模块）\n'
-    printf -- '- rootfs/mango: 本轮未构建（见 MANIFEST）\n'
+    printf -- '- 组件: boot.img + initramfs.cpio.gz + modules.tar.zst'
+    [ -f "$DIST/ArchLinuxARM-aarch64-elish-rootfs.tar.zst" ] && printf ' + rootfs'
+    [ -f "$DIST/mango-0.18.3-aarch64.tar.zst" ] && printf ' + mango'
+    printf ' + INSTALL.md\n'
     printf -- '- 构建时间: %s\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf '| 资产 | 用途 | 大小 (B) |\n|---|---|---|\n'
     printf '| boot.img | **CSOT** 面板（本机面板）：fastboot flash boot_b boot.img | %s |\n' "$(stat -c%s "$DIST/boot.img")"
     printf '| boot-boe-alt.img | **BOE** 面板，同上 | %s |\n' "$(stat -c%s "$DIST/boot-boe-alt.img")"
     printf '| initramfs.cpio.gz | 已打进两个 img 的 initramfs（含面板驱动 + GPU 固件） | %s |\n' "$(stat -c%s "$DIST/initramfs.cpio.gz")"
     printf '| modules.tar.zst | 内核模块，解到 linux 分区的 /lib/modules | %s |\n' "$(stat -c%s "$DIST/modules.tar.zst")"
+    if [ -f "$DIST/ArchLinuxARM-aarch64-elish-rootfs.tar.zst" ]; then
+        printf '| ArchLinuxARM-aarch64-elish-rootfs.tar.zst | 完整 rootfs 归档（chroot/自建镜像用） | %s |\n' "$(stat -c%s "$DIST/ArchLinuxARM-aarch64-elish-rootfs.tar.zst")"
+    fi
+    if [ -f "$DIST/linux-rootfs-f2fs.img.zst" ]; then
+        printf '| linux-rootfs-f2fs.img.zst | linux 分区根镜像（先 zstd -d，再 fastboot flash linux） | %s |\n' "$(stat -c%s "$DIST/linux-rootfs-f2fs.img.zst")"
+    fi
+    if [ -f "$DIST/mango-0.18.3-aarch64.tar.zst" ]; then
+        printf '| mango-0.18.3-aarch64.tar.zst | MangoWM 运行时（已内置在 rootfs，仅源码重装时用） | %s |\n' "$(stat -c%s "$DIST/mango-0.18.3-aarch64.tar.zst")"
+    fi
+    if [ -f "$DIST/INSTALL.md" ]; then
+        printf '| INSTALL.md | 完整安装教程（从进入 fastboot 到首启验证/更新/救援） | %s |\n' "$(stat -c%s "$DIST/INSTALL.md")"
+    fi
+    printf '%s\n' '' '完整安装步骤（含 rootfs 首刷与首启配置）见 INSTALL.md。'
     printf '%s\n' '' '## 刷写（只碰 boot_b 与 linux 两个分区）' '' '```sh'
     printf '%s\n' 'sha256sum -c SHA256SUMS.txt         # 先验校验和'
     printf '%s\n' 'fastboot getvar current-slot        # 期望 a（本项目只写 _b 槽位）'
@@ -293,7 +354,7 @@ if [ "$PUBLISH" -eq 0 ]; then
 fi
 
 stage "发布 Release $TAG"
-ASSETS="boot.img boot-boe-alt.img initramfs.cpio.gz modules.tar.zst SHA256SUMS.txt"
+ASSETS="$ASSETS SHA256SUMS.txt"
 export GH_REPO=$SLUG
 # 只有 HEAD 已经在某个远端分支上时才能 --target：未推送的提交会让 GitHub 报
 # "Release.target_commitish is invalid"，发布整步失败（产物没问题，卡在打 tag）。
