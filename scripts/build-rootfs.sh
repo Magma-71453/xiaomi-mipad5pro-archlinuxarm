@@ -26,6 +26,10 @@
 #   --firmware DIR   copy the firmware tree DIR/ into the rootfs root (expects a
 #                    usr/lib/firmware/... layout, as produced from the pmaports
 #                    firmware-xiaomi-elish package)
+#   --overlay DIR    copy an extra tree DIR/ into the rootfs root (device-only
+#                    runtime that is not in packages.list: dock/OSD binaries,
+#                    icons, wvkbd/qbootctl…; optional but needed for a complete
+#                    desktop image)
 #   --size SIZE      image size, default 16G (auto-grown when the tree needs more;
 #                    the partition is ~195 GiB, grow it later with resize.f2fs)
 #   --also-ext4      additionally build an ext4 image (secondary, not default)
@@ -47,10 +51,11 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 CONFIG_DIR=$REPO_ROOT/configs/rootfs
 PKG_LIST=$CONFIG_DIR/packages.list
-OUT_DIR=$REPO_ROOT/output/20261024/rootfs
-MANIFEST=$REPO_ROOT/output/20261024/MANIFEST.rootfs
+OUT_DIR=${OUT_DIR:-$REPO_ROOT/output/20261024/rootfs}
+MANIFEST=${MANIFEST:-$REPO_ROOT/output/20261024/MANIFEST.rootfs}
+OUT_ROOT=$(dirname "$MANIFEST")   # MANIFEST.rootfs / SHA256SUMS / FLASH-LOG 所在目录
 
-BUILD_ROOT=$(cd "$REPO_ROOT/.." && pwd)/.build
+BUILD_ROOT=${BUILD_ROOT:-$(cd "$REPO_ROOT/.." && pwd)/.build}
 WORK=$BUILD_ROOT/rootfs
 TREE=$WORK/tree
 STATE=$WORK/.state
@@ -59,18 +64,18 @@ PKGCACHE=$BUILD_ROOT/pkg
 QEMU_DIR=$BUILD_ROOT/tools/qemu
 QEMU=$QEMU_DIR/usr/bin/qemu-aarch64-static
 
-ALARM_BASE_URL=""
-[ -n "$ALARM_BASE_URL" ] || ALARM_BASE_URL=http://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz
-ALARM_MIRROR=""
-[ -n "$ALARM_MIRROR" ] || ALARM_MIRROR=http://mirror.archlinuxarm.org/aarch64
-ARCH_MIRROR=""
-[ -n "$ARCH_MIRROR" ] || ARCH_MIRROR=https://geo.mirror.pkgbuild.com
+# 全部可被环境变量覆盖（镜像源、固定版本包的归档 URL、构建/产物目录），
+# 便于在受限网络或不同机器上重跑；默认值与 docs/findings/rootfs.md 一致。
+ALARM_BASE_URL=${ALARM_BASE_URL:-http://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz}
+ALARM_MIRROR=${ALARM_MIRROR:-http://mirror.archlinuxarm.org/aarch64}
+ARCH_MIRROR=${ARCH_MIRROR:-https://geo.mirror.pkgbuild.com}
 QEMU_PKG_FILE=qemu-user-static-11.1.2-1-x86_64.pkg.tar.zst
-QEMU_PKG_URL=$ARCH_MIRROR/extra/os/x86_64/$QEMU_PKG_FILE
+QEMU_PKG_URL=${QEMU_PKG_URL:-$ARCH_MIRROR/extra/os/x86_64/$QEMU_PKG_FILE}
 REPOS="core extra alarm"
 
 MODULES_DIR=""
 FIRMWARE_DIR=""
+OVERLAY_DIR=""
 IMG_SIZE=""
 [ -n "$IMG_SIZE" ] || IMG_SIZE=16G
 ALSO_EXT4=0
@@ -79,6 +84,7 @@ F2FS_SECTOR_SIZE=""
 F2FS_FEATURES=extra_attr,inode_checksum,flexible_inline_xattr
 F2FS_VERSION=1.17.0-1
 F2FS_PKG_FILE=f2fs-tools-$F2FS_VERSION-x86_64.pkg.tar.zst
+F2FS_PKG_URL=${F2FS_PKG_URL:-$ARCH_MIRROR/extra/os/x86_64/$F2FS_PKG_FILE}
 F2FS_DIR=$BUILD_ROOT/tools/f2fs
 F2FS_BIN=$F2FS_DIR/usr/bin
 F2FS_LIB=$F2FS_DIR/usr/lib
@@ -110,6 +116,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --modules)        MODULES_DIR=$2; shift 2 ;;
     --firmware)       FIRMWARE_DIR=$2; shift 2 ;;
+    --overlay)        OVERLAY_DIR=$2; shift 2 ;;
     --size)           IMG_SIZE=$2; shift 2 ;;
     --jobs)           JOBS=$2; shift 2 ;;
     --no-locale-gen)  DO_LOCALEGEN=0; shift ;;
@@ -223,7 +230,7 @@ fetch_f2fs_tools() {
   mkdir -p "$F2FS_DIR" "$DL"
   local pkg=$DL/$F2FS_PKG_FILE
   if [ ! -s "$pkg" ]; then
-    curl -fL --retry 3 -o "$pkg" "$ARCH_MIRROR/extra/os/x86_64/$F2FS_PKG_FILE"       -w 'f2fs-tools http=%{http_code} bytes=%{size_download}
+    curl -fL --retry 3 -o "$pkg" "$F2FS_PKG_URL"       -w 'f2fs-tools http=%{http_code} bytes=%{size_download}
 ' | tee -a "$LOG"
   fi
   bsdtar -x -f "$pkg" -C "$F2FS_DIR"
@@ -1118,6 +1125,17 @@ install_mango() {
   ls -l "$TREE/usr/bin/mango" "$TREE/etc/mango" "$TREE/usr/share/wayland-sessions" 2>&1 | tee -a "$LOG" | tail -8
 }
 
+install_overlay() {
+  banner "stage: extra overlay tree"
+  if [ -z "$OVERLAY_DIR" ]; then
+    warn "--overlay not given; device-only runtime overlay SKIPPED"
+    return 0
+  fi
+  [ -d "$OVERLAY_DIR" ] || die "--overlay $OVERLAY_DIR is not a directory"
+  cp -a "$OVERLAY_DIR/." "$TREE/"
+  log "overlay: $(find "$OVERLAY_DIR" -type f | wc -l) files, $(du -sh "$OVERLAY_DIR" | cut -f1)"
+}
+
 install_firmware() {
   banner "stage: device firmware"
   if [ -z "$FIRMWARE_DIR" ]; then
@@ -1249,6 +1267,7 @@ customise() {
   install_modules
   install_mango
   install_firmware
+  install_overlay
   run_ldconfig
   run_locale_gen
   banner "stage: customised tree summary"
@@ -1526,7 +1545,7 @@ verify_artifacts() {
 write_manifest() {
   banner "stage: write MANIFEST.rootfs and SHA256SUMS"
   local now sha_t sha_f sha_e sums
-  sums=$REPO_ROOT/output/20261024/SHA256SUMS
+  sums=$OUT_ROOT/SHA256SUMS
   now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   sha_t=$(sha256sum "$TARBALL" | cut -d' ' -f1)
   sha_f=$(sha256sum "$F2FS_IMG" | cut -d' ' -f1)
@@ -1537,7 +1556,7 @@ write_manifest() {
     echo "# 构建时间 (UTC): $now"
     echo "# 只允许写入 boot_b 与 linux 两个分区；下列产物目标均为 linux 分区"
     echo "# f2fs 为默认产物，tar.zst 为等价归档，ext4 仅在 --also-ext4 时生成"
-    echo "# 机器可校验的伴生文件：同目录 SHA256SUMS（cd output/20261024 && sha256sum -c SHA256SUMS）"
+    echo "# 机器可校验的伴生文件：同目录 SHA256SUMS（cd ${OUT_ROOT#$REPO_ROOT/} && sha256sum -c SHA256SUMS）"
     echo "# 文件名 | 目标分区 | SHA256 | 构建时间 | 大小(bytes)"
     printf '%s | %s | %s | %s | %s\n' \
       "rootfs/$(basename "$F2FS_IMG")" linux "$sha_f" "$now" "$(stat -c %s "$F2FS_IMG")"
@@ -1558,7 +1577,7 @@ write_manifest() {
   tee -a "$LOG" < "$MANIFEST"
   log "SHA256SUMS:"
   tee -a "$LOG" < "$sums"
-  ( cd "$REPO_ROOT/output/20261024" && sha256sum -c SHA256SUMS ) | tee -a "$LOG"
+  ( cd "$OUT_ROOT" && sha256sum -c SHA256SUMS ) | tee -a "$LOG"
 }
 # ======================================================================= main
 main() {

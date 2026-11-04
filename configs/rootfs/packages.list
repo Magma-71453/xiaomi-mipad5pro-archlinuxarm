@@ -31,7 +31,7 @@ pipewire-alsa
 wireplumber
 alsa-ucm-conf
 alsa-utils
-# --- firmware needed by the GPU / DSP (Adreno a690 blobs live here) ---------
+# --- firmware needed by the GPU / DSP (Adreno a650 blobs live here) ---------
 linux-firmware-qcom
 # --- filesystem tools (fsck.f2fs is needed for the boot-time fsck pass) ------
 f2fs-tools
@@ -48,3 +48,24 @@ ccache
 meson
 cmake
 ninja
+
+# --- desktop shell / runtime (2026-11-04: rootfs 重装后可直接进 MangoWM) -----
+waybar
+kitty
+fastfetch
+btop
+rofi
+grim
+swaybg
+gtk3
+gtk-layer-shell
+python-gobject
+libnotify
+jq
+brightnessctl
+xdg-desktop-portal
+xdg-desktop-portal-gtk
+adwaita-fonts
+adwaita-icon-theme
+hicolor-icon-theme
+ttf-nerd-fonts-symbols
