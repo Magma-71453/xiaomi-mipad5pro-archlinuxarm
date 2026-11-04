@@ -23,8 +23,8 @@ amplifiers, bq2597x charge-pump fast charging and an x86 layer via FEX-Emu.
 |---|---|---|
 | 引导链 | ✅ | ABL → `boot.img`（`Image.gz` + 零填充 dtb + initramfs）→ f2fs 根分区（`PARTLABEL=linux`） |
 | 显示 | ✅ | CSOT 面板 1600×2560@120 Hz、单 mode、`Transform 270`，缩放交给合成器 |
-| 触摸 | ✅ | `novatek,NVT-ts-spi`（音量改由 dock / OSD 调节；原 evdev 音量守护已因 CPU 占用移除） |
-| 桌面 | ✅ | MangoWM + 自制外壳（mangobar / dock / OSD / 手势 / 屏幕键盘），见 `docs/mango.md` |
+| 触摸 | ✅ | `novatek,NVT-ts-spi`（音量键位 → `mango-volume` → OSD；原 evdev 音量守护已因 CPU 占用移除） |
+| 桌面 | ✅ | MangoWM + **waybar** 状态栏 + 自制外壳（dock / OSD / 手势 / 屏幕键盘），见 `docs/mango.md` |
 | Wi-Fi | ✅ | ath11k WCN6855；含「MAC 全 0 导致接口起不来」的修复（`wlp-mac.service`） |
 | 蓝牙 | ✅ | QCA6390（`hci_uart`）；含「BD_ADDR 全 0 导致适配器不出现」的修复（`elish-bt-mac.service`） |
 | 网络 | ✅ | NetworkManager + 公共 DNS 兜底 + `timesyncd`（代理客户端按需自行配置，仓库不含任何订阅/节点信息） |
@@ -32,7 +32,7 @@ amplifiers, bq2597x charge-pump fast charging and an x86 layer via FEX-Emu.
 | 音量 | ✅ | UCM 固定数字 913/913、模拟 20/20、`PCM Source=DSP`；软件音量 100% 不失真 |
 | 充电 | ✅ 快充 | bq2597x 电荷泵 + PD 9 V：电池 0.7 A → **≈2.5 A（约 10 W）**，35 ℃ 上下 |
 | 性能 | ✅ | `perf/schedplace` 线程放置守护进程（只做 affinity/cpuset/nice，不碰 governor） |
-| x86 应用 | ⚠️ | FEX-Emu 已装可用；thunks / glibc rootfs 仍在打磨（`docs/fex.md`） |
+| x86 应用 | ⚠️ | FEX-Emu 已装可用（RootFS = Ubuntu 24.04 glibc）；thunks 仍在打磨（`docs/fex.md`） |
 
 ## 仓库结构
 
@@ -43,7 +43,7 @@ configs/           要落位到产物里的配置
   initramfs/       静态 busybox init（按 PARTLABEL=linux 挂载根分区）
   rootfs/          直接覆盖进根文件系统的文件树（UCM、systemd unit、/usr/local/bin 脚本…）
   perf/            schedplace 运行配置
-  mango-shell/     桌面外壳源码（mangobar 补丁、dock / OSD / 协议代码）
+  mango-shell/     桌面外壳源码（dock / OSD / 协议代码；mangobar 已归档）
 perf/schedplace/   线程放置守护进程（C11，源码 + 单测 + systemd unit）
 docs/              设计、验证记录、调研与交接文档
 tests/             刷入脚本拒绝矩阵等回归测试
@@ -62,14 +62,17 @@ scripts/build-rootfs.sh       # Arch Linux ARM aarch64 rootfs -> tar.zst + f2fs 
 scripts/make-bootimg.py       # Image.gz + dtb + initramfs -> boot.img
 scripts/collect-manifest.sh   # 生成 MANIFEST / SHA256SUMS
 scripts/flash-elish.sh --dry-run   # 默认演练，确认后才会真的写分区
-scripts/build-release.sh      # 一键：内核 -> initramfs -> 两份 boot.img -> gh release
+scripts/fetch-gpu-firmware.sh # 下载 initramfs 早期加载所需的 Adreno 650 固件（sha256 校验）
+scripts/build-release.sh      # 一键：内核 -> GPU 固件 -> initramfs -> 两份 boot.img -> gh release
 ```
 
 一键出图并发 Release：`scripts/build-release.sh`（本机编内核，产出 CSOT 的 `boot.img` 与 BOE 的
 `boot-boe-alt.img`，标签/标题 `yy/mm/dd`；`--no-publish` 只构建、`--skip-kernel` 复用上一轮内核）。
+GPU 固件默认放在 `<build-dir>/firmware/elish-gpu`，缺失时脚本会自动调用 `fetch-gpu-firmware.sh` 下载并校验；
+**initramfs 必须带 a650_gmu.bin / a650_sqe.fw / a650_zap.mbn**，否则 rootfs 挂载前 GPU/DRM 起不来（B-058）。
 
 内核迭代不必重刷根文件系统：把新模块拷进 `/lib/modules/$(uname -r)/...`、`depmod -a`、`modprobe -r/-i` 即可；
-只有 `Image` / dtb 变化才需要重刷 `boot_b`。
+只有 `Image` / dtb / initramfs 变化才需要重刷 `boot_b`（纯模块补丁只在 `modules.tar.zst` 里）。
 
 ## 关键实现
 
