@@ -24,18 +24,11 @@ RAMDISK_SIZE=$(stat -c %s "$WORK/ramdisk.gz")
 assert_eq "kernel blob is 1 MiB" 1048576 "$KERNEL_SIZE"
 assert_between "ramdisk blob around 4 KiB" 3800 4400 "$RAMDISK_SIZE"
 
-# Expected kernel segment per the documented rule: dtbs are appended at 2048-byte
-# alignment, computed here independently of the generator.
+# Expected kernel segment per D-018/B-022: "cat kernel dtb", i.e. ZERO padding
+# between the kernel payload and each dtb (any padding makes ABL reject the
+# image with "Failed to load/authenticate boot image: Load Error").
 {
-    cat "$WORK/kernel"
-    head -c $(( (2048 - KERNEL_SIZE % 2048) % 2048 )) /dev/zero
-    cat "$WORK/dtb-boe"
-} > "$WORK/seg1"
-SEG1_SIZE=$(stat -c %s "$WORK/seg1")
-{
-    cat "$WORK/seg1"
-    head -c $(( (2048 - SEG1_SIZE % 2048) % 2048 )) /dev/zero
-    cat "$WORK/dtb-csot"
+    cat "$WORK/kernel" "$WORK/dtb-boe" "$WORK/dtb-csot"
 } > "$WORK/expected-kernel-segment"
 EXPECT_KERNEL_SIZE=$(stat -c %s "$WORK/expected-kernel-segment")
 RAMDISK_OFF=$(align $((4096 + EXPECT_KERNEL_SIZE)) 4096)
@@ -58,7 +51,7 @@ assert_eq "header.page_size" 4096 "$(field header.page_size "$WORK/verify.log")"
 assert_eq "header.kernel_addr (deviceinfo 0x8000)" 0x00008000 "$(field header.kernel_addr "$WORK/verify.log")"
 assert_eq "header.ramdisk_addr (deviceinfo 0x01000000)" 0x01000000 "$(field header.ramdisk_addr "$WORK/verify.log")"
 assert_eq "header.tags_addr (deviceinfo 0x00000100)" 0x00000100 "$(field header.tags_addr "$WORK/verify.log")"
-assert_eq "header.cmdline pins the rootfs by PARTLABEL" "quiet rootwait root=PARTLABEL=linux console=tty0 loglevel=4" "$(field header.cmdline "$WORK/verify.log")"
+assert_eq "header.cmdline pins the rootfs by PARTLABEL" "quiet rootwait root=PARTLABEL=linux console=tty0 loglevel=4 systemd.gpt_auto=no" "$(field header.cmdline "$WORK/verify.log")"
 assert_eq "header.kernel_size includes both dtbs" "$EXPECT_KERNEL_SIZE" "$(field header.kernel_size "$WORK/verify.log")"
 assert_eq "header.ramdisk_size" "$RAMDISK_SIZE" "$(field header.ramdisk_size "$WORK/verify.log")"
 assert_eq "header.second_size" 0 "$(field header.second_size "$WORK/verify.log")"
@@ -78,6 +71,34 @@ assert_eq "image sha256 matches file on disk" "$(sha256sum "$WORK/boot.img" | cu
 
 assert_eq "header dump prints 15 header.* fields" 15 "$(grep -c '^header\.' "$WORK/verify.log")"
 assert_eq "header dump prints 6 layout.* fields" 6 "$(grep -c '^layout\.' "$WORK/verify.log")"
+
+# gzip kernel (the real Image.gz input): the dtb must follow the gzip stream
+# with no padding; --verify must accept it.  This fixture needs a real FDT
+# header (magic + totalsize) because --verify now walks the dtbs.
+head -c 65536 /dev/urandom | gzip -n -9 > "$WORK/kernel.gz"
+GZ_SIZE=$(stat -c %s "$WORK/kernel.gz")
+{
+    printf '\xd0\x0d\xfe\xed'          # FDT magic
+    printf '\x00\x00\x00\x40'          # totalsize = 64 (big-endian)
+    head -c 56 /dev/zero
+} > "$WORK/dtb-fdt"
+DTB_SIZE=$(stat -c %s "$WORK/dtb-fdt")
+python3 "$TOOL" --kernel "$WORK/kernel.gz" --ramdisk "$WORK/ramdisk.gz" \
+    --dtb "$WORK/dtb-fdt" --page-size 4096 --out "$WORK/boot-gz.img" > "$WORK/build-gz.log" 2>&1
+assert_eq "gzip-kernel build exit status" 0 "$?"
+python3 "$TOOL" --verify --input "$WORK/boot-gz.img" > "$WORK/verify-gz.log" 2>"$WORK/verify-gz.err"
+assert_eq "gzip-kernel verify exit status" 0 "$?"
+assert_eq "gzip kernel: dtb follows the gzip stream with no padding" \
+    $(( GZ_SIZE + DTB_SIZE )) "$(field header.kernel_size "$WORK/verify-gz.log")"
+
+# negative: padding between the gzip kernel and the dtb must be rejected
+# (D-018/B-022: this exact shape caused ABL "Load Error" on the real device).
+{ cat "$WORK/kernel.gz"; head -c 1489 /dev/zero; } > "$WORK/kernel-gz-padded"
+python3 "$TOOL" --kernel "$WORK/kernel-gz-padded" --ramdisk "$WORK/ramdisk.gz" \
+    --dtb "$WORK/dtb-fdt" --page-size 4096 --out "$WORK/boot-gz-padded.img" >/dev/null 2>&1
+python3 "$TOOL" --verify --input "$WORK/boot-gz-padded.img" > "$WORK/bad-dtb.log" 2>"$WORK/bad-dtb.err"
+assert_eq "verify rejects a dtb separated from the kernel by padding" 3 "$?"
+assert_contains "the dtb-padding failure points at D-018/B-022" "immediately follow" "$WORK/bad-dtb.err"
 
 # negative paths: corrupted padding and corrupted magic must be rejected
 cp "$WORK/boot.img" "$WORK/bad-padding.img"

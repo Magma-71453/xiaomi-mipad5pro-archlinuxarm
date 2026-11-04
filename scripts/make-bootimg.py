@@ -11,21 +11,25 @@ Addresses/pagesize come from pmaports device/testing/device-xiaomi-elish/devicei
     deviceinfo_flash_offset_tags    = 0x00000100
     deviceinfo_kernel_cmdline       = "quiet"
 
-DTB handling (deviceinfo append_dtb=true): every --dtb is appended after the
-kernel segment, each DTB starts on a 2048-byte boundary, and the whole
-concatenation is reported as kernel_size, matching legacy mkbootimg.
+DTB handling (deviceinfo append_dtb=true): every --dtb is appended directly
+after the kernel segment with NO padding, i.e. "cat Image.gz dtb".  Any padding
+between the kernel and the DTB makes ABL reject the image with
+"Failed to load/authenticate boot image: Load Error" (real-device result,
+docs/decisions.md D-018 / bug.md B-022).  The whole concatenation is reported
+as kernel_size.
 """
 
 import argparse
 import hashlib
 import struct
 import sys
+import zlib
 
 MAGIC = b"ANDROID!"
 HEADER_VERSION = 0
 HEADER_FMT = "<8s10I16s512s32s1024s"
 HEADER_SIZE = struct.calcsize(HEADER_FMT)  # 1632
-DTB_ALIGN = 2048
+FDT_MAGIC = b"\xd0\x0d\xfe\xed"
 
 DEFAULT_PAGE_SIZE = 4096
 DEFAULT_KERNEL_ADDR = 0x00008000
@@ -36,7 +40,10 @@ DEFAULT_TAGS_ADDR = 0x00000100
 #   larger than that can never be flashed; --max-size enforces it here.
 #   The shipped cmdline follows the old vendor image and pins the rootfs by
 #   PARTLABEL so it survives partition renumbering.
-DEFAULT_CMDLINE = "quiet rootwait root=PARTLABEL=linux console=tty0 loglevel=4"
+# systemd.gpt_auto=no: we do not use /boot; without it systemd-gpt-auto-generator
+# creates boot.automount for the Android ESP partition, and the failing automount
+# breaks dbus-broker's mount namespace (bug.md B-029).
+DEFAULT_CMDLINE = "quiet rootwait root=PARTLABEL=linux console=tty0 loglevel=4 systemd.gpt_auto=no"
 BOOT_PARTITION_LIMIT = 393216 * 512  # 201326592 bytes = 192 MiB
 NAME_FIELD = 16
 CMDLINE_FIELD = 512
@@ -80,14 +87,13 @@ def encode_fixed(text, width, field):
     return raw
 
 
-def build_kernel_payload(kernel, dtbs, align=DTB_ALIGN):
-    """Concatenate kernel and dtbs, each dtb starting on an aligned boundary."""
-    payload = bytearray(kernel)
-    for dtb in dtbs:
-        pad = align_up(len(payload), align) - len(payload)
-        payload.extend(b"\0" * pad)
-        payload.extend(dtb)
-    return bytes(payload)
+def build_kernel_payload(kernel, dtbs):
+    """Concatenate kernel and dtbs with NO padding (D-018: cat Image.gz dtb).
+
+    ABL refuses any alignment/padding between the kernel payload and the DTB
+    (bug.md B-022), so this must stay a plain concatenation.
+    """
+    return bytes(kernel) + b"".join(dtbs)
 
 
 def sha1_id(kernel_payload, ramdisk, second):
@@ -219,6 +225,50 @@ def parse_image(data):
     return header, segments, expected_size
 
 
+def check_kernel_dtb_layout(kernel_bytes):
+    """D-018/B-022: the DTB must immediately follow the gzip kernel, no padding.
+
+    The build path always feeds Image.gz (CONFIG_KERNEL_GZIP) followed by one or
+    more FDTs.  When the kernel is gzip, walk the members and require each DTB
+    to start exactly where the previous one ended.
+    """
+    problems = []
+    if not kernel_bytes.startswith(b"\x1f\x8b"):
+        return problems  # not a gzip kernel; nothing this check can prove
+    zstream = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    try:
+        zstream.decompress(kernel_bytes)
+    except zlib.error as exc:
+        return ["kernel segment is not a valid gzip stream: %s" % exc]
+    gz_len = len(kernel_bytes) - len(zstream.unused_data)
+    rest = kernel_bytes[gz_len:]
+    if not rest:
+        return problems
+    if not rest.startswith(FDT_MAGIC):
+        problems.append(
+            "dtb must immediately follow Image.gz with no padding (offset %d holds %s, "
+            "expected FDT magic %s); see docs/decisions.md D-018 / bug.md B-022"
+            % (gz_len, rest[:4].hex(), FDT_MAGIC.hex()))
+        return problems
+    offset = 0
+    index = 0
+    while offset < len(rest):
+        index += 1
+        if rest[offset:offset + 4] != FDT_MAGIC:
+            problems.append("dtb %d at kernel offset %d is not an FDT (magic %s)"
+                            % (index, gz_len + offset, rest[offset:offset + 4].hex()))
+            break
+        if offset + 8 > len(rest):
+            problems.append("truncated FDT header at kernel offset %d" % (gz_len + offset))
+            break
+        total = struct.unpack(">I", rest[offset + 4:offset + 8])[0]
+        if total < 8 or offset + total > len(rest):
+            problems.append("bad FDT totalsize %d at kernel offset %d" % (total, gz_len + offset))
+            break
+        offset += total
+    return problems
+
+
 def check_padding(data, header, segments):
     problems = []
     page = header["page_size"]
@@ -264,6 +314,7 @@ def cmd_verify(args):
     kernel_bytes = data[kernel_off:kernel_off + kernel_size]
     ramdisk_bytes = data[ramdisk_off:ramdisk_off + ramdisk_size]
     second_bytes = data[second_off:second_off + second_size]
+    problems.extend(check_kernel_dtb_layout(kernel_bytes))
     recomputed = sha1_id(kernel_bytes, ramdisk_bytes, second_bytes).ljust(ID_FIELD, b"\0")
     if recomputed != stored_id:
         problems.append("header id mismatch: stored %s recomputed %s"
@@ -312,7 +363,7 @@ def main(argv):
     parser.add_argument("--kernel")
     parser.add_argument("--ramdisk")
     parser.add_argument("--dtb", action="append", default=[],
-                        help="DTB appended after the kernel segment at 2048-byte alignment (repeatable)")
+                        help="DTB appended directly after the kernel segment, no padding (repeatable)")
     parser.add_argument("--second")
     parser.add_argument("--cmdline", default=DEFAULT_CMDLINE)
     parser.add_argument("--name", default="")

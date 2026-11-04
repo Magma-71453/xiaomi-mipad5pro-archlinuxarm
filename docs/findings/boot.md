@@ -20,9 +20,13 @@
 - header：`<8s10I16s512s32s1024s` = **1632 字节**，HEADER_VERSION=0。
 - deviceinfo 字段：`kernel_addr=0x00008000`、`ramdisk_addr=0x01000000`、`tags_addr=0x00000100`、
   `page_size=4096`、`second_size=0`。
-- **cmdline（D-013 后更新）**：`quiet rootwait root=PARTLABEL=linux console=tty0 loglevel=4`。
+- **cmdline（D-013 后更新，2026-11-04 加 `systemd.gpt_auto=no` 落实 B-029 预防项）**：
+  `quiet rootwait root=PARTLABEL=linux console=tty0 loglevel=4 systemd.gpt_auto=no`。
   用 PARTLABEL 而非 UUID：分区重建/重格式化后 UUID 变化，标签不变；与 `/init` 的 PARTLABEL 探测同源。
-- DTB 追加：每个 DTB 起点按 **2048 字节**对齐接在 kernel 段之后，`kernel_size` 含全部 DTB（同 mkbootimg）。
+- DTB 追加：DTB **紧跟** kernel 负载、**零填充**（`cat Image.gz dtb`，同 postMarketOS boot-deploy），
+  `kernel_size` = Image.gz + 全部 DTB。任何 2048 对齐/填充都会让 ABL 报
+  `Failed to load/authenticate boot image: Load Error`（D-018 / B-022；2026-11-04 曾回归，见 B-057），
+  `make-bootimg.py --verify` 会拒绝带填充的镜像。
   **实测机型是 CSOT**，所以默认产物只带 `sm8250-xiaomi-elish-csot.dtb`；BOE 走独立文件名 `boot-boe-alt.img`。
 - **192 MiB 硬上限**（`boot_b` = 393216 扇区 = 201,326,592 B）：`--max-size` 默认 201326592，
   生成时超限直接 `exit 1`（提示"压缩 initramfs 或减少 dtb"），`--verify` 也按同一上限判失败（退出码 3）。
