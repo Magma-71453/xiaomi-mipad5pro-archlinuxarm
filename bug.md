@@ -949,3 +949,25 @@
 
 > 发布同步：Release 26/11/04 已用修复后的产物重新上传（boot.img sha256 `8d54f256…`、
 > initramfs `70dee857…`；modules.tar.zst 未变，`84fc4b94…`）。
+
+
+## B-060 2026-11-04 真机刷入验证：boot.img 零填充 + initramfs GPU 固件（B-057/B-058 收口）
+
+- 刷入：设备 19:19:56 从新 boot_b 启动；`sudo dd if=/dev/disk/by-partlabel/boot_b bs=4096 count=4099 | sha256sum`
+  = `8d54f256…9281`，与 Release 26/11/04 的 boot.img 一致（CSOT 面板）。
+- 内核/cmdline：`uname -v` = `#1 SMP PREEMPT Wed Nov 4 15:00:07 CST 2026`（clang 23.1.4）；
+  `/proc/cmdline` 含 `systemd.gpt_auto=no`；`boot.automount`/`boot.mount` 均不存在、`/boot` 未挂载
+  （B-029 预防项真机生效）。
+- 显示/GPU：`elish-init` 依次 insmod 4 个 panel 驱动成功（0.870–1.196 s）；
+  `adreno_request_fw loaded qcom/a650_sqe.fw / a650_gmu.bin`（0.926/0.927 s，早于根分区挂载），
+  随后 `msmdrmfb frame buffer device` —— B-058 修复在真机生效。
+- 模块：把 modules.tar.zst 解到 / 后 `sudo depmod -a` rc=0；`rfcomm.ko.zst`/`bnep.ko.zst`/
+  `snd-soc-sm8250.ko.zst` 的 sha256 与 Release 一致（`8a411983…`/`e3359d4e…`/`fd817e99…`）。
+  `sudo modprobe rfcomm bnep` rc=0，`lsmod` 可见；`sudo systemctl restart bluetooth` 后新 bluez
+  进程不再报 `kernel lacks bnep-protocol support` / `RFCOMM ... Protocol not supported` —— B-049 真机生效。
+- 其它观察：`elish-init: resize: resize.f2fs missing from initramfs, skipping` 属预期（根已 196 GiB，
+  无需扩容）；`systemctl is-system-running` = degraded，唯一失败单元仍是
+  `systemd-networkd-wait-online`（既有问题）；dmesg WARNING 数量 11（与上一 boot 相同，均为既有上游告警）。
+- 踩坑记录：`sudo tar -xf modules.tar.zst -C / && depmod -a` 的 `depmod` 会以普通用户运行而
+  `Permission denied`，必须写 `sudo depmod -a`；运行中的系统替换模块后，蓝牙 profile 需要
+  `sudo systemctl restart bluetooth`（或直接重启）才会重新初始化。
