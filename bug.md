@@ -971,3 +971,9 @@
 - 踩坑记录：`sudo tar -xf modules.tar.zst -C / && depmod -a` 的 `depmod` 会以普通用户运行而
   `Permission denied`，必须写 `sudo depmod -a`；运行中的系统替换模块后，蓝牙 profile 需要
   `sudo systemctl restart bluetooth`（或直接重启）才会重新初始化。
+- **重启后复验（19:30:43 起）**：`systemctl is-system-running` 最终 = degraded，唯一 failed 单元仍是
+  `systemd-networkd-wait-online`（既有问题，不影响 WiFi/桌面）；`rfcomm`/`bnep` 开机即已加载
+  （bluez 自动 request_module，refcount 4/2），`journalctl -u bluetooth` 中 bnep/RFCOMM 报错数 =
+  **0**（B-049 完整生效）；`snd_soc_sm8250` 已是流水线构建版（`taint=` 为空，旧手工模块为 `OE`），
+  `right_slot=2`；声卡/DRM（card0、renderD128）与 mango/waybar 会话正常；
+  `systemd-analyze` userspace 2min20s（主要是 elish-bt-autoconnect 的 6 轮重连等待，属设计）。
