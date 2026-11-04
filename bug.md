@@ -977,3 +977,40 @@
   **0**（B-049 完整生效）；`snd_soc_sm8250` 已是流水线构建版（`taint=` 为空，旧手工模块为 `OE`），
   `right_slot=2`；声卡/DRM（card0、renderD128）与 mango/waybar 会话正常；
   `systemd-analyze` userspace 2min20s（主要是 elish-bt-autoconnect 的 6 轮重连等待，属设计）。
+
+
+## B-061 26/11/04 Release 扩成完整安装包（boot + rootfs + INSTALL.md）
+
+- 背景：2026-11-04 的 Release 26/11/04 最初只有 boot/kernel 产物，无法从零安装——没有
+  `linux` 分区 rootfs 镜像，也没有安装教程（B-057~B-060 修的是 boot/initramfs）。
+- 本次补齐：
+  - **rootfs**：`scripts/build-rootfs.sh` 新增 `--overlay`，BUILD_ROOT/OUT_DIR/MANIFEST/
+    镜像源/固定版本包 URL 全部可用环境变量覆盖，并修正 verify 阶段写死 `output/20261024` 的路径；
+    `configs/rootfs/packages.list` 补 waybar/kitty/fastfetch/btop/rofi/grim/swaybg/gtk3/
+    gtk-layer-shell/python-gobject/libnotify/jq/brightnessctl/xdg-desktop-portal{,-gtk}/字体等
+    桌面运行时。用 ALARM base + 292 包 + MangoWM 0.18.3 运行时 + 设备 overlay（dock/OSD/
+    wvkbd/qbootctl/图标）+ GPU/DSP 固件 965 文件构建完成。
+  - **initramfs**：`build-release.sh` 新增 `EXTRA_DIR`（默认 `<build-dir>/initramfs-extra`），
+    放入 f2fs-tools 与 glibc 库 → 首次安装时在挂载 rootfs 前离线 `resize.f2fs` 把根扩到
+    整个 195 GiB；boot.img 仍为零填充（`kernel_size=15,626,610`）。
+  - **安装教程**：新增 `INSTALL.md`（272 行，随 Release 资产发布）：资产清单、安全边界、
+    进 fastboot、校验/解压、手工与 `flash-elish.sh` 两种刷入方式、首启改密/WiFi/SSH/扩容、
+    验证清单、日常更新、故障恢复、已知限制、源码重建。
+  - **Release 打包**：`build-release.sh` 自动发现 `output/<date>/rootfs` 与 `mango`，
+    f2fs 镜像以 `zstd -3` 压缩后上传（规避 GitHub 2 GiB 单资产上限），并带上
+    `INSTALL.md`、`MANIFEST`；notes 增加 rootfs 刷写与首启说明。
+- 产物与验证（2026-11-04 20:04 CST）：
+  | 产物 | 大小 | sha256 |
+  |---|---|---|
+  | `linux-rootfs-f2fs.img` | 17,179,869,184 B（16 GiB） | `54c89fcb…10a86d03` |
+  | `ArchLinuxARM-aarch64-elish-rootfs.tar.zst` | 1,253,386,085 B | `a1a482dabad5…84659c04` |
+  | `linux-rootfs-f2fs.img.zst` | 1,400,757,727 B | `cde868133441…4d281ac1` |
+  | `boot.img` / `boot-boe-alt.img` | 18,137,088 B | `f45a68b859b6…` / `7f6ec57c985a…` |
+  | `initramfs.cpio.gz` | 2,500,106 B | `045f60822cd4…` |
+
+  rootfs 构建报告见 `output/20261104/rootfs/BUILD-REPORT.txt`：fsck `[Fail]`=0、
+  valid inodes 94,429 = source entries、仅 4 B 超级块差异（预期的扇区字patch）；
+  本地 `sha256sum -c SHA256SUMS.txt` 10 个资产全过；Release 远端 digest 与本地一致。
+- 备注：rootfs 镜像 16 GiB，首次开机由 initramfs 自动扩到 195 GiB；默认用户 `magma`、
+  默认密码 `magma`（INSTALL.md 要求首次登录立即修改）；设备当前只刷了新的 boot.img，
+  rootfs 仍是 10/24 手工系统，未重刷（重刷会清空数据，由机主自行决定）。
