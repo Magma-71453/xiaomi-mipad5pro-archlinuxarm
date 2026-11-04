@@ -257,6 +257,14 @@ fi
 stage "发布 Release $TAG"
 ASSETS="boot.img boot-boe-alt.img initramfs.cpio.gz modules.tar.zst SHA256SUMS.txt"
 export GH_REPO=$SLUG
+# 只有 HEAD 已经在某个远端分支上时才能 --target：未推送的提交会让 GitHub 报
+# "Release.target_commitish is invalid"，发布整步失败（产物没问题，卡在打 tag）。
+TARGET=()
+if git -C "$REPO" branch -r --contains HEAD 2>/dev/null | grep -q .; then
+    TARGET=(--target "$(git -C "$REPO" rev-parse HEAD)")
+else
+    log "警告：HEAD 不在任何远端分支上（本地提交未推送），本次不打 --target，tag 指向远端默认分支"
+fi
 if gh release view "$TAG" >/dev/null 2>&1; then
     log "Release $TAG 已存在：覆盖资产 + 刷新说明"
     ( cd "$DIST" && gh release upload "$TAG" $ASSETS --clobber )
@@ -264,8 +272,7 @@ if gh release view "$TAG" >/dev/null 2>&1; then
 else
     log "创建 Release $TAG"
     ( cd "$DIST" && gh release create "$TAG" $ASSETS \
-        --title "$TAG" --notes-file RELEASE-NOTES.md \
-        --target "$(git -C "$REPO" rev-parse HEAD)" )
+        --title "$TAG" --notes-file RELEASE-NOTES.md "${TARGET[@]}" )
 fi
 gh release view "$TAG" --json tagName,name,url,assets \
     --jq '"release: \(.tagName) / \(.name) / \(.url)\nassets: \([.assets[].name] | join(", "))"'
