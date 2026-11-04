@@ -877,3 +877,75 @@
   ```
 - 结论/教训：**layer-shell 表面的显隐不要用 unmap 做**；一旦必须有进程常驻，就一定要有
   supervisor + 保留 stderr，否则"被杀"与"被隐藏"在外部不可区分、且用户只看得到"没反应"。
+
+
+## B-057 boot.img 的 DTB 又被 2048 字节对齐填充（构建脚本回归，ABL 会 Load Error）
+
+- 现象：2026-11-04 15:08 的 `output/20261104/boot/boot.img`（以及随后发布的 Release 26/11/04）
+  在 `Image.gz` 与 dtb 之间插入了 **1489 B 零填充**：`kernel_size=15,628,099`，而
+  `Image.gz`=15,489,583、csot dtb=137,027（和应为 15,626,610）。设备在用 boot_b 是零填充
+  （`kernel_size=15,626,573`，Image.gz 15,489,546 + dtb 137,027），结构与 B-022 修复后的要求一致；
+  按 D-018/B-022 的真机结论，带填充的镜像会被 ABL 报 `Failed to load/authenticate boot image: Load Error`。
+- 根因：`scripts/make-bootimg.py` 的 `build_kernel_payload(..., align=2048)` 自仓库初始化起就是
+  mkbootimg 式对齐；B-022 的修复（`cat Image.gz dtb`，零填充）没有落实到该脚本，`--verify`
+  也只查结构、不查 dtb 位置，所以一直“自校验 OK”。
+- 修复：`build_kernel_payload()` 改为纯拼接；`--verify` 新增 `check_kernel_dtb_layout()`：
+  gzip 内核之后必须直接是 FDT magic，逐 DTB 校验 totalsize，带填充即 exit 3；
+  `tests/test-bootimg.sh` 增加 gzip 内核零填充正例 + 带填充反例；`docs/findings/boot.md` 同步改正。
+- 验证（2026-11-04 18:35 重构建）：新 `boot.img` = 16,789,504 B，sha256 `8d54f256…9281`，
+  `kernel_size=15,626,610 = 15,489,583 + 137,027`，`--verify` OK；BOE 版同理（`kernel_size=15,626,606`
+  = 15,489,583 + 137,023）。人为构造的 1489 B 填充镜像被 `--verify` 拒绝（rc=3）。
+  `tests/test-bootimg.sh` 41 项全过。真机刷写复验待做（本机未刷，设备 boot_b 仍是 10/24 构建）。
+
+## B-058 build-release 生成的 initramfs 漏装 GPU 固件（早期 request_firmware -2，DRM 起不来）
+
+- 现象：15:08 构建的 `initramfs.cpio.gz`（1,105,119 B）只有 4 个 panel `.ko` + `modules.dep`，
+  没有 `/lib/firmware`；设备当前 initramfs（2,725,405 B）带 `qcom/a650_gmu.bin`、`a650_sqe.fw`、
+  `qcom/sm8250/xiaomi/elish/a650_zap.mbn`。设备 dmesg 实测：GPU 固件在 **1.386 s** 加载，而
+  根分区 **1.766 s** 才挂载；本机 7.2.0 config 是 `CONFIG_DRM_MSM=y`、
+  `# CONFIG_FW_LOADER_USER_HELPER_FALLBACK is not set`（没有用户态兜底）。
+- 根因：`scripts/build-release.sh` 调 `build-initramfs.sh` 时只传 `--modules`，没传 `--firmware`；
+  B-019 只把固件补进了 rootfs，而 GPU 固件在内核早期（rootfs 挂载前）就要用。
+- 修复：新增 `scripts/fetch-gpu-firmware.sh`（linux-firmware kernel.org cgit + xiaomi-elish-firmware
+  镜像，逐文件 sha256 校验）；`build-release.sh` 新增 GPU 固件阶段——缺失时自动下载到
+  `<build-dir>/firmware/elish-gpu`，并给 `build-initramfs.sh` 传 `--firmware`；
+  RELEASE-NOTES 同时写进 `output/<date>/`，构建提交号带 `+dirty` 标记（G-02/G-11）。
+- 验证：`fetch-gpu-firmware.sh` 下载大小 41,548 / 31,964 / 13,964 B 且 sha256 全对，重跑幂等；
+  重构建的 initramfs（1,152,863 B，sha256 `70dee857…71f4`）内含三条固件路径，
+  `cpio -it | grep lib/firmware` 非空、逐文件 sha256 与源一致；`build-initramfs.sh --test` 全过。
+  真机点屏/GPU 复验待刷机。
+
+## B-059 仓库 rootfs 侧配置与设备/文档不一致（重建镜像会回归）
+
+- 现象（2026-11-04 设备只读核查，仓库 ↔ 设备逐文件 sha256）：
+  - `configs/rootfs/etc/modprobe.d/50-snd-soc-sm8250.conf` 写 `right_slot=1`，而补丁默认值、
+    `docs/audio.md` 参数表、设备运行值都是 `2`；
+  - 仓库没有 `configs/rootfs/etc/pacman.conf`，设备的 `DisableSandboxFilesystem/Syscalls`
+    修复（B-031）重建后会丢；
+  - `configs/rootfs/etc/sudoers.d/10-wheel` 无 NOPASSWD，而设备、AGENTS.md 和全部 `sudo -n`
+    自动化流程都依赖它；
+  - boot.img cmdline 缺 B-029 记录的预防项 `systemd.gpt_auto=no`（设备已靠 mask boot/efi 单元兜底）。
+- 修复：right_slot 改 2；新增 ALARM 默认 `pacman.conf`（Architecture=aarch64）并打开两个
+  DisableSandbox 选项；wheel 改为 `NOPASSWD: ALL` 与已部署设备一致；`make-bootimg.py`
+  默认 cmdline 追加 `systemd.gpt_auto=no`。
+- 验证：新 boot.img cmdline = `quiet rootwait root=PARTLABEL=linux console=tty0 loglevel=4 systemd.gpt_auto=no`；
+  仓库/设备 70 个同名文件核对 58 相同、10 差异（运行时文件或明确本地偏好）、2 个本地源码未跟踪；
+  `bash tests/run.sh` 见最终自检。
+- 限制：rootfs 镜像本轮未构建；这些文件要等下次 rootfs 构建/同步才落到 linux 分区。
+  设备当前状态本身正确（right_slot=2、pacman.conf 已改、NOPASSWD 已开），无需改设备。
+
+## 2026-11-04 核查后状态补充（不改旧条目，仅追加）
+
+| 编号 | 旧台账状态 | 本次核对（设备只读 + 新构建） |
+|---|---|---|
+| B-049 | 配置已入库，尚未重编内核验证 | ✅ 新内核 config（RFCOMM/BNEP/HIDP=m）与 modules.tar.zst（bnep/rfcomm/hidp.ko.zst）均已确认；设备旧内核仍缺，待刷 boot_b + 解 modules |
+| B-048 | 已修复 | ✅ 设备 hidp 已加载；仓库 modules-load.d 注释与设备单行 `hidp` 功能等价 |
+| B-034 | 已修复 | ✅ 设备 regmap 0x4820：i2c1 四颗=0x102、i2c3 四颗=0x100；仓库 right_slot 笔误已按 B-059 修正 |
+| B-031 | 已修复（仅真机） | ✅ 仓库已补 `configs/rootfs/etc/pacman.conf`（B-059），重建不再丢 |
+| B-013 | 已裁决·待真机 | 📌 设备 dtbo_b 实际已全 0（erase 已执行），台账状态过时 |
+| B-008/B-017 | 无现成 FEX 包，延后 | 📌 设备已有自建 FEX（/usr/bin/FEX*，无包属主），台账未更新 |
+| B-021 | 开放-已文档化 | 📌 设备根已扩到 196 GiB（df 195.2G），需求已满足；fstab 注释仍写 16 GiB 首启扩容 |
+| B-020 | 开放-低频 | 仍缺 hexagonrpcd（无包/无二进制） |
+
+> 发布同步：Release 26/11/04 已用修复后的产物重新上传（boot.img sha256 `8d54f256…`、
+> initramfs `70dee857…`；modules.tar.zst 未变，`84fc4b94…`）。
