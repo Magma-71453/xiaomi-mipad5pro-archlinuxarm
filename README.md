@@ -68,6 +68,9 @@ scripts/build-release.sh      # 一键：内核 -> GPU 固件 -> initramfs -> �
 
 一键出图并发 Release：`scripts/build-release.sh`（本机编内核，产出 CSOT 的 `boot.img` 与 BOE 的
 `boot-boe-alt.img`，标签/标题 `yy/mm/dd`；`--no-publish` 只构建、`--skip-kernel` 复用上一轮内核）。
+如果 `output/<date>/rootfs` 与 `output/<date>/mango` 已经构建好，脚本会把 rootfs 镜像（zstd 压缩）、
+rootfs 归档、mango 运行时和 `INSTALL.md` 一并打进 Release 资产。
+**安装/刷机步骤见 [INSTALL.md](INSTALL.md)。**
 GPU 固件默认放在 `<build-dir>/firmware/elish-gpu`，缺失时脚本会自动调用 `fetch-gpu-firmware.sh` 下载并校验；
 **initramfs 必须带 a650_gmu.bin / a650_sqe.fw / a650_zap.mbn**，否则 rootfs 挂载前 GPU/DRM 起不来（B-058）。
 
@@ -111,6 +114,7 @@ GPU 固件默认放在 `<build-dir>/firmware/elish-gpu`，缺失时脚本会自�
 
 | 文档 | 内容 |
 |---|---|
+| **`INSTALL.md`** | **完整安装教程（快照随 Release 资产一起发布）** |
 | `docs/plan.md` | 阶段计划（含早期 PENDING-DEVICE 清单，实时状态以本 README 为准） |
 | `docs/decisions.md` | 决策记录 D-001… |
 | `docs/audio.md` | 音频链路推导、右声道修复、响度调校 |
