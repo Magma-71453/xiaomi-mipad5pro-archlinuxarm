@@ -330,6 +330,7 @@ linux-rootfs-f2fs.img.zst: OK
 ```
 
 期望 `unlocked: yes`。若为 `no`，后面所有 `flash` 都会报 `FAILED (remote: 'not allowed in locked state')`，必须回到本节。
+若报变量不存在（不同 bootloader 的变量名有差异），改用 `/usr/bin/fastboot getvar all`，在输出里找 `unlocked:` 那一行。
 
 ### 2.2 进入 fastboot 的三种方式
 
@@ -484,20 +485,29 @@ fastboot（主机） --fastboot boot--> recovery（跑在设备内存里） --ad
 
 #### 3.3.5 卸载 `/data` 与 `/sdcard`
 
+分区表被挂载中的文件系统占用时，`parted` 会拒绝写入，或内核拒绝重读分区表。所以先看再卸：
+
 ```sh
 /usr/bin/adb shell "mount | grep -E ' /data | /sdcard '"
 ```
 
-- 有输出 → 先在 OFRP 界面 Mount → 取消勾选 Data；或直接：
+- 有输出 → 在 OFRP 界面 Mount → 取消勾选 Data；或直接卸载：
 
 ```sh
 /usr/bin/adb shell "umount /sdcard; umount /data"
 ```
 
-- 期望：再跑第一条命令**没有任何输出**。
-- 为什么：分区表被挂载中的文件系统占用时，`parted` 会拒绝写入，或内核拒绝重读分区表。
+- 再跑一次第一条命令，期望**没有任何输出**。
 
 #### 3.3.6 push 静态 `parted`
+
+先确认 `/cache` 存在（部分 A/B 机型没有 cache 分区）：
+
+```sh
+/usr/bin/adb shell "ls -ld /cache /tmp"
+```
+
+两个都有就用 `/cache`（下文按这个写）；`/cache` 不存在就改用 `/tmp`，并把后续所有 `/cache/parted` 换成 `/tmp/parted`。
 
 ```sh
 /usr/bin/adb push /srv/elish/parted /cache/parted
@@ -507,7 +517,9 @@ fastboot（主机） --fastboot boot--> recovery（跑在设备内存里） --ad
 
 - 期望最后一行打印 `parted (GNU parted) 3.x`。
 - `parted` 必须是 **aarch64 静态二进制**。Android 上没有 glibc，动态链接的会报 `no such file or directory` 或 `CANNOT LINK EXECUTABLE`。
-- 来源：上游 Armbian 指南提供的 `parted.7z`（renegade-project.tech），解压即得。解压需要 `7z`：
+- 主机上虽然也有 `/usr/bin/parted`，但**主机版 parted 看不到设备的 UFS**，只能用来演练（见附录 A）。
+
+`parted` 从哪来：上游 Armbian 指南提供的 `parted.7z`（renegade-project.tech），解压即得。解压需要 `7z`，三条命令依次是解压、加执行权限、确认架构：
 
 ```sh
 /usr/bin/7z x /srv/elish/parted.7z -o/srv/elish
@@ -515,9 +527,7 @@ fastboot（主机） --fastboot boot--> recovery（跑在设备内存里） --ad
 /usr/bin/file /srv/elish/parted
 ```
 
-  第三条命令期望输出 `ELF 64-bit LSB executable, ARM aarch64, statically linked`。
-
-- 主机上虽然也有 `/usr/bin/parted`，但**主机版 parted 看不到设备的 UFS**，只能用来演练（见附录 A）。
+最后一条命令期望输出 `ELF 64-bit LSB executable, ARM aarch64, statically linked`。
 
 #### 3.3.7 确认目标磁盘
 
@@ -586,7 +596,7 @@ userdata 结束扇区    E = 500118158
 /usr/bin/adb shell "/cache/parted /dev/block/sda print"
 ```
 
-`Size` 列会显示成 `238GB` 这样的值。`E − S + 1` 个扇区换算成容量，应该与它接近（差几十 MiB 是正常的，分区表有对齐与保留）。
+`Size` 列会显示成 `254GB` 这样的值。注意 parted 默认用**十进制**单位（1GB = 10⁹ 字节），不要和 GiB 混；`E − S + 1` 个扇区换算成字节后应该与它接近（差几十 MiB 是正常的，分区表有对齐与保留）。
 
 **关于扇区大小（重要，别跳过）**：
 
@@ -612,7 +622,7 @@ linux 结束扇区 = E                               # 沿用原来的末尾
 linux 扇区数  = E − L + 1
 ```
 
-为什么 `−1` / `+1`：`Start` 与 `End` 都是**含端点**的扇区号，两个相邻分区不能共用同一个扇区。少算或多算 1 个扇区，`parted` 就会报重叠。
+为什么 `−1` / `+1`：`Start` 与 `End` 都是**含端点**的扇区号，两个相邻分区不能共用同一个扇区。少算 1 个扇区（`L = U`）会重叠，`parted` 直接报错；多算 1 个则留下 1 个扇区的空洞，不报错但对不上核对表。
 
 **算例：256 GB 机型，给 Android 留 32 GiB**
 
@@ -1029,6 +1039,8 @@ Finished. Total time: …
 等价写法：`/usr/bin/fastboot set_active b`。两种都被拒绝时见 [2.5](#25-fastboot-失败对照表)。
 
 **为什么必须做**：ABL 默认从 `_a` 启动（Android 在 a 槽）。不切槽，刷好的 Linux 不会被引导，设备会直接进 Android。
+
+**这条命令写了什么**：`--set-active` 由 bootloader 把「活动槽」标记写进槽位元数据（`misc` 分区），不改任何文件系统内容，也不写 `boot_a`/`super`/`userdata`。这是 A/B 机型切换启动槽的唯一方式，上游 Armbian 流程同样如此。本项目不 `flash`、不 `erase` `misc`。
 
 ### 5.4 失败处理
 
