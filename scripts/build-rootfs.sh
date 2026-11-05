@@ -52,8 +52,11 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 CONFIG_DIR=$REPO_ROOT/configs/rootfs
 PKG_LIST=$CONFIG_DIR/packages.list
 OUT_DIR=${OUT_DIR:-$REPO_ROOT/output/20261024/rootfs}
-MANIFEST=${MANIFEST:-$REPO_ROOT/output/20261024/MANIFEST.rootfs}
-OUT_ROOT=$(dirname "$MANIFEST")   # MANIFEST.rootfs / SHA256SUMS / FLASH-LOG 所在目录
+# MANIFEST / SHA256SUMS / FLASH-LOG 属于"整套产物"那一层（rootfs/ 的上一级）。
+# 它们必须跟着 OUT_DIR 走：只覆盖 OUT_DIR 时若仍指向旧日期目录，SHA256SUMS 里的
+# "rootfs/<file>" 相对路径就会对不上，最后的 sha256sum -c 必失败。
+OUT_ROOT=${OUT_ROOT:-$(dirname "$OUT_DIR")}
+MANIFEST=${MANIFEST:-$OUT_ROOT/MANIFEST.rootfs}
 
 BUILD_ROOT=${BUILD_ROOT:-$(cd "$REPO_ROOT/.." && pwd)/.build}
 WORK=$BUILD_ROOT/rootfs
@@ -69,7 +72,9 @@ QEMU=$QEMU_DIR/usr/bin/qemu-aarch64-static
 ALARM_BASE_URL=${ALARM_BASE_URL:-http://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz}
 ALARM_MIRROR=${ALARM_MIRROR:-http://mirror.archlinuxarm.org/aarch64}
 ARCH_MIRROR=${ARCH_MIRROR:-https://geo.mirror.pkgbuild.com}
-QEMU_PKG_FILE=qemu-user-static-11.1.2-1-x86_64.pkg.tar.zst
+# 版本号可覆盖：镜像站的 extra 仓库只保留最新版，旧版本会被清掉而 404。
+# 需要复现旧构建时用 QEMU_PKG_FILE=qemu-user-static-<ver>-1-x86_64.pkg.tar.zst 覆盖。
+QEMU_PKG_FILE=${QEMU_PKG_FILE:-qemu-user-static-11.1.3-1-x86_64.pkg.tar.zst}
 QEMU_PKG_URL=${QEMU_PKG_URL:-$ARCH_MIRROR/extra/os/x86_64/$QEMU_PKG_FILE}
 REPOS="core extra alarm"
 
@@ -446,18 +451,59 @@ list_installed() {
   done | sort
 }
 
+# 依赖解析必须相对**底包本身**做，而不是相对当前 $TREE。
+# $TREE 可能已经是上一次构建定制过的树（含本仓库追加的包），拿它当基线会让解析器
+# 以为「这些包底包已经有了」，从而少装甚至不装任何包；紧接着 extract_base 又把树
+# 重置回裸底包，最终产物既没有追加包也没有 mango/overlay。
+list_base_packages() {
+  local meta=$STATE/base-meta
+  local stampfile=$STATE/base-meta.stamp
+  if [ -f "$stampfile" ] && [ "$(cat "$stampfile" 2>/dev/null)" = "$BASE_SIZE" ] \
+     && [ -d "$meta/var/lib/pacman/local" ]; then
+    list_installed "$meta"
+    return 0
+  fi
+  rm -rf "$meta"; mkdir -p "$meta"
+  log "extracting base package metadata from the tarball (one-off, cached)"
+  tar -xzf "$BASE_TARBALL" -C "$meta" --wildcards '*/var/lib/pacman/local/*/desc' 2>/dev/null \
+    || tar -xzf "$BASE_TARBALL" -C "$meta" 'var/lib/pacman/local/*/desc' 2>/dev/null \
+    || true
+  # 有的 tarball 带 ./ 前缀，把嵌套层摊平到 <meta>/var/lib/pacman/local
+  if [ ! -d "$meta/var/lib/pacman/local" ]; then
+    local nested
+    nested=$(find "$meta" -maxdepth 4 -type d -path '*/var/lib/pacman/local' 2>/dev/null | head -1)
+    if [ -n "$nested" ]; then
+      mkdir -p "$meta/.flat"
+      cp -a "$nested/." "$meta/.flat/"
+      rm -rf "$meta/var"; mkdir -p "$meta/var/lib/pacman"
+      mv "$meta/.flat" "$meta/var/lib/pacman/local"
+    fi
+  fi
+  echo "$BASE_SIZE" > "$stampfile"
+  list_installed "$meta"
+}
+
 resolve_packages() {
   banner "stage: resolve package closure"
   write_resolver
-  list_installed "$TREE" > "$STATE/installed.txt"
-  log "base rootfs records $(wc -l < "$STATE/installed.txt") packages"
+  list_base_packages > "$STATE/installed.txt"
+  log "base tarball records $(wc -l < "$STATE/installed.txt") packages"
   # shellcheck disable=SC2046
   python3 "$STATE/resolve.py" "$DL/alarmdb" "$STATE/installed.txt" \
       $(grep -h -v -e '^#' -e '^$' "$PKG_LIST") \
       > "$STATE/pkgs.tsv" 2> "$STATE/resolve.log"
   tee -a "$LOG" < "$STATE/resolve.log"
-  [ -s "$STATE/pkgs.tsv" ] || die "resolver produced no packages"
-  log "resolved $(wc -l < "$STATE/pkgs.tsv") packages to add"
+  # 0 个包是合法结果：底包已经提供了请求集合的全部内容（例如为验证而重跑同一棵树，
+  # 或 packages.list 全部被 base tarball 覆盖）。只有「列表非空却解析出 0 个」才可能是 bug，
+  # 但那种情况 resolve.log 里会有错误行，所以按日志判断而不是按条数判断。
+  if [ ! -s "$STATE/pkgs.tsv" ]; then
+    if grep -qiE 'error|missing|not found|unknown' "$STATE/resolve.log" 2>/dev/null; then
+      die "resolver produced no packages and reported errors (see $STATE/resolve.log)"
+    fi
+    warn "resolver produced no packages: the base rootfs already provides every requested package"
+  else
+    log "resolved $(wc -l < "$STATE/pkgs.tsv") packages to add"
+  fi
 }
 
 # ============================================================= download stage
@@ -488,7 +534,13 @@ SHEOF
     printf '%s\t%s\t%s\n' "$ALARM_MIRROR/$repo/$file" "$PKGCACHE/$file" "$sha" >> "$wl"
   done < "$STATE/pkgs.tsv"
   t0=$(date +%s)
-  xargs -P "$JOBS" -L 1 "$helper" < "$wl"
+  # 空清单时不要调用 xargs：GNU xargs 在输入为空时仍会执行一次命令（不带参数），
+  # 会让 helper 撞上 "unbound variable"。0 个待下载包是合法状态。
+  if [ -s "$wl" ]; then
+    xargs -P "$JOBS" -L 1 "$helper" < "$wl"
+  else
+    log "nothing to download: every requested package is already in the base rootfs"
+  fi
   t1=$(date +%s)
   log "downloaded $(wc -l < "$wl") packages in $((t1 - t0))s, cache $(du -sb "$PKGCACHE" | cut -f1) bytes"
 }
@@ -761,7 +813,7 @@ for w in wanted:
 open(gen_path, "w").write("\n".join(out) + "\n")
 print("locale.gen activated:", wanted)
 PYEOF
-  grep -v -e '^#' -e '^$' "$TREE/etc/locale.gen" | tee -a "$LOG"
+  { grep -v -e '^#' -e '^$' "$TREE/etc/locale.gen" || true; } | tee -a "$LOG"
 }
 
 apply_timezone() {
@@ -934,7 +986,7 @@ open(path, "w").write("\n".join(lines) + "\n")
 print("sudoers %wheel line active:", done)
 PYEOF
   chmod 440 "$f"
-  grep -n '^%wheel' "$f" | tee -a "$LOG"
+  { grep -n '^%wheel' "$f" || true; } | tee -a "$LOG"
 }
 
 prune_boot() {
@@ -945,7 +997,7 @@ prune_boot() {
   mkdir -p "$TREE/boot"
   after=$(du -sb "$TREE/boot" | cut -f1)
   log "/boot pruned: $before -> $after bytes; no kernel/initramfs shipped in this rootfs"
-  ls -la "$TREE/boot" | tee -a "$LOG"
+  { ls -la "$TREE/boot" 2>/dev/null || true; } | tee -a "$LOG"
 }
 
 systemd_enable() {
@@ -1021,7 +1073,7 @@ apply_systemd() {
     esac
   done < <(find "$TREE/etc" -type l 2>/dev/null)
   log "rewrote $n absolute symlinks under /etc as relative links"
-  find "$TREE/etc/systemd/system" -type l -printf '%p -> %l\n' | sort | tee -a "$LOG"
+  { find "$TREE/etc/systemd/system" -type l -printf '%p -> %l\n' 2>/dev/null || true; } | sort | tee -a "$LOG"
 }
 
 install_modules() {
@@ -1046,10 +1098,12 @@ install_modules() {
     warn "modules source $MODULES_DIR does not exist; SKIPPED"
     return 0
   fi
-  kver=$(ls "$src" | grep -E '^[0-9]' | head -1)
+  kver=$(ls "$src" 2>/dev/null | grep -E '^[0-9]' | head -1 || true)
   if [ -z "$kver" ]; then
-    warn "no <version> directory under $src; SKIPPED"
-    return 0
+    # 常见误用：把 --modules 指到 lib/modules/<kver> 而不是 lib/modules。
+    # 静默跳过会导致镜像里没有面板/GPU 模块，首次开机黑屏，所以这里直接失败。
+    warn "no <kernelrelease> directory under $src"
+    die "--modules expects the directory that CONTAINS <kernelrelease> (e.g. .../lib/modules), got: $MODULES_DIR"
   fi
   log "modules in the tree BEFORE install: $(ls "$TREE/lib/modules" 2>/dev/null | tr '\n' ' ')"
   if [ -d "$TREE/lib/modules" ]; then
@@ -1133,7 +1187,7 @@ install_mango() {
     done
   done
   log "mango DT_NEEDED resolution: $((total - missing))/$total resolved inside the rootfs"
-  ls -l "$TREE/usr/bin/mango" "$TREE/etc/mango" "$TREE/usr/share/wayland-sessions" 2>&1 | tee -a "$LOG" | tail -8
+  { ls -l "$TREE/usr/bin/mango" "$TREE/etc/mango" "$TREE/usr/share/wayland-sessions" 2>&1 || true; } | tee -a "$LOG" | tail -8
 }
 
 install_overlay() {
@@ -1159,7 +1213,13 @@ install_firmware() {
   fi
   cp -a "$FIRMWARE_DIR/." "$TREE/"
   log "firmware: $(find "$FIRMWARE_DIR" -type f | wc -l) files, $(du -sh "$FIRMWARE_DIR" | cut -f1)"
-  ls "$TREE/usr/lib/firmware/qcom/sm8250/xiaomi/elish/" 2>/dev/null | head -12 | tee -a "$LOG"
+  # 这行只是给人看的核对输出，不是断言：拷进来的固件树可能来自不同的布局
+  # （例如 fetch-gpu-firmware.sh 产出 qcom/a650_* 与 qcom/sm8250/a650_zap.mbn，
+  # 而没有 qcom/sm8250/xiaomi/elish/ 这一层）。目录不存在时不能中断构建。
+  local fw_root=$TREE/usr/lib/firmware
+  if [ -d "$fw_root/qcom" ]; then
+    find "$fw_root/qcom" -name 'a650*' -type f 2>/dev/null | sed "s|^$TREE||" | tee -a "$LOG"
+  fi
 }
 
 collect_special_modes() {
@@ -1209,7 +1269,16 @@ apply_special_modes() {
   done < "$STATE/special-modes.txt"
   log "chmod applied to $n paths from $(wc -l < "$STATE/special-modes.txt") collected entries"
   log "suid files now present: $(find "$TREE" -perm -4000 | wc -l); sgid: $(find "$TREE" -perm -2000 | wc -l)"
-  ls -l "$TREE/usr/bin/sudo" "$TREE/usr/bin/passwd" "$TREE/usr/bin/mount" "$TREE/usr/lib/dbus-daemon-launch-helper" 2>&1 | tee -a "$LOG"
+  # 逐个列，缺哪个只报警不中断：这行是给人看的核对输出，不是断言。
+  # （原先单条 ls 在 sudo 缺失时返回非零，配合 set -e + pipefail 会直接终止构建。）
+  local f
+  for f in usr/bin/sudo usr/bin/passwd usr/bin/mount usr/lib/dbus-daemon-launch-helper; do
+    if [ -e "$TREE/$f" ]; then
+      ls -l "$TREE/$f" 2>&1 | tee -a "$LOG"
+    else
+      warn "expected binary missing from rootfs: /$f"
+    fi
+  done
 }
 
 make_tree_readable() {
@@ -1550,7 +1619,7 @@ verify_artifacts() {
     awk -F'\t' '{printf "%s %s %s\n", $3, $4, $1}' "$STATE/pkgs.tsv"
   } > "$rep" 2>&1
   log "verification report: $rep"
-  grep -E '## |valid inodes|valid blocks|superblock features|log_sectorsize|total FS sectors|patch changed' "$rep" | tee -a "$LOG"
+  { grep -E '## |valid inodes|valid blocks|superblock features|log_sectorsize|total FS sectors|patch changed' "$rep" || true; } | tee -a "$LOG"
 }
 
 write_manifest() {
@@ -1614,7 +1683,10 @@ main() {
   fetch_qemu
   fetch_f2fs_tools
 
-  if [ ! -d "$TREE/var/lib/pacman/local" ]; then
+  # 树必须在解析依赖之前反映真实的底包状态。若只是"目录存在"就跳过解包，
+  # 上一次构建残留的树（可能被中途失败污染）会被当成底包，解析器于是误判
+  # "这些包已经装好了"，最终产出缺包的镜像。
+  if [ ! -d "$TREE/var/lib/pacman/local" ] || [ "$DO_CLEAN" -eq 1 ]; then
     extract_base
   fi
   resolve_packages

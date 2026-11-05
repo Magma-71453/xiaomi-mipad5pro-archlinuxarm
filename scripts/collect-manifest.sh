@@ -58,7 +58,19 @@ while IFS= read -r frag; do
     [ -z "$claimed" ] && continue
     [ -z "$file" ] && continue
     base=$(basename "$file")
-    real=$(find "$REPO_ROOT" -type f -name "$base" -print -quit 2>/dev/null || true)
+    # 先按"相对产物根的路径"解析（这正是 MANIFEST.<module> 里路径的语义）。
+    # 不能直接 find -name 全局搜 basename：output/<date>/ 下同名文件很多
+    # （kernel/SHA256SUMS vs 汇总 SHA256SUMS vs rootfs/SHA256SUMS），
+    # 取到第一个就会把一份好清单误判成 MISMATCH。
+    real=""
+    if [ -f "$OUT/$file" ]; then
+      real="$OUT/$file"
+    elif [ -f "$file" ]; then
+      real="$file"
+    else
+      real=$(find "$OUT" -type f -name "$base" -print -quit 2>/dev/null || true)
+      [ -n "$real" ] || real=$(find "$REPO_ROOT" -type f -name "$base" -print -quit 2>/dev/null || true)
+    fi
     if [ -n "$real" ]; then
       actual=$(sha256sum "$real" | cut -d' ' -f1)
       if [ "$claimed" != "$actual" ]; then
