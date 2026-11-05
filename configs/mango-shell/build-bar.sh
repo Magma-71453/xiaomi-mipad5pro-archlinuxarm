@@ -26,7 +26,7 @@ cc -O2 -Wall -Wextra -o mango-bar mango-bar.c \
 echo "built $(pwd)/mango-bar"
 
 if [ "$1" = "install" ]; then
-	printf 'magma\n' | sudo -S -p '' install -m755 mango-bar /usr/local/bin/
+	sudo -n install -m755 mango-bar /usr/local/bin/
 	pkill -x mango-bar 2>/dev/null || true
 	sleep 0.5
 	setsid /usr/local/bin/mango-bar </dev/null >/tmp/mango-bar.log 2>&1 &

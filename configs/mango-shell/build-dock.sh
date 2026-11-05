@@ -29,7 +29,7 @@ cc -O2 -Wall -o mango-dock mango-dock.c \
 echo "built $(pwd)/mango-dock"
 
 if [ "$1" = "install" ]; then
-	printf 'magma\n' | sudo -S -p '' install -m755 mango-dock /usr/local/bin/
+	sudo -n install -m755 mango-dock /usr/local/bin/
 	pkill -x mango-dock 2>/dev/null || true
 	sleep 0.5
 	setsid env DOCK_SCALE=2 /usr/local/bin/mango-dock </dev/null >/dev/null 2>&1 &
