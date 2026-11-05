@@ -9,7 +9,7 @@
 - **内核/引导镜像 → boot_b**：已验证（Armbian 官方刷入指南与 pmOS wiki 都这么做）。
 - **根文件系统 → linux 分区**：已验证（Armbian 指南 fastboot flash linux ...），
   但 **linux 不是出厂分区**：它是操作者先用 parted 缩小 userdata 后 **手工新建** 的 GPT 分区。
-- **boot_b = /dev/block/sde37：UNVERIFIED**。没有任何一手来源把 boot_b 钉到 sde37；
+- **boot_b = /dev/block/sde37：已验证（2026-11-05 真机）**。此前无一手上游来源把 boot_b 钉到 sde37，但在平板自身的 Linux 上实测 `boot_b -> ../../sde37` 成立；下线级仍以 by-partlabel 为准。
   可验证的是 GPT 分区名就是 boot_b，Linux 侧一律通过 /dev/disk/by-partlabel/boot_b（或 /dev/block/by-name/boot_b）访问。
 - **dtbo 是否需要写/擦**：上游两套流程都要求**先 erase dtbo_b**，与本项目"禁止任何 erase、只写 boot_b+linux"的硬约束**直接冲突**
   → 见文末 **CONFLICT-2** 一节（处置结论见该节末条）。
@@ -128,7 +128,8 @@ fastboot 侧用 fastboot flash boot_a|boot_b（第 84–87 行）。**同样没�
 
 ### 2.4 boot_b = /dev/block/sde37 的判定
 
-- **UNVERIFIED**。已检索的一手来源（pmOS wiki 2026-04 正文、Armbian Flashing-Guide、armbian/build 的 elish 板级配置与 postinst 脚本、
+- **已于 2026-11-05 在真机上验证成立**（`/dev/disk/by-partlabel/boot_b -> ../../sde37`）。以下保留当时的谨慎论证过程，供回溯：
+- 当时判定 **UNVERIFIED**。已检索的一手来源（pmOS wiki 2026-04 正文、Armbian Flashing-Guide、armbian/build 的 elish 板级配置与 postinst 脚本、
   pipa 多系统文档）**全部不出现 sde37**；仓库 deviceinfo 也只声明 deviceinfo_flash_method="fastboot"（按名字刷）。
 - 要拿到一手证据只有两条路（本文采集时不具备）：
   1. 真机上执行 ls -l /dev/block/by-name/boot_b 与 ls -l /dev/disk/by-partlabel/boot_b；
@@ -192,7 +193,7 @@ fastboot flash 到 boot_a / dtbo_a / dtbo_b / system_b / userdata / super / vend
 
 | 编号 | 风险 | 证据 | 影响 | 处置 |
 |------|------|------|------|------|
-| R1 | **erase dtbo_b 是上游两套流程共同的前置步骤** | pmOS wiki 原文；Armbian 指南 "First erase dtbo_b" | 与"禁止 erase"硬约束冲突；不擦的后果未确证（UNVERIFIED，见 CONFLICT-2） | 按 §6 CONFLICT-2 的裁决（D-009）处置 |
+| R1 | **erase dtbo_b 是上游两套流程共同的前置步骤** | pmOS wiki 原文；Armbian 指南 "First erase dtbo_b" | **2026-11-05 真机确认：不擦会黑屏/开不了机**（Android 的 dtbo overlay 与本项目 dtb 冲突） | 已升级为**装机必需步骤**（D-020）；脚本保留显式门控防误擦 |
 | R2 | linux 分区不存在（未做 §2.1 准备） | Armbian 指南：分区手建 | 刷入直接失败，不会误写别处 | 脚本先 getvar partition-size:linux 探测，失败即停 |
 | R3 | pmbootstrap flasher 会写 super / system_b / userdata | pmOS wiki 三种方法 | 违反硬约束 | 不采用 pmbootstrap 刷入流程（与 D-002 一致） |
 | R4 | fastboot set_active b 改写槽位标记 | wiki 与 Armbian 都要求 | 不改数据分区，但改变默认启动槽 | 保留为必要步骤；失败时不要用变体重试 |
@@ -221,7 +222,7 @@ fastboot flash 到 boot_a / dtbo_a / dtbo_b / system_b / userdata / super / vend
 
 **不 erase dtbo_b 时的可能后果（逐条标注证据级别）**：
 
-- 机理推测（**UNVERIFIED**）：ABL 启动 slot b 时会读取 dtbo_b 并把其中的 overlay/DFT 应用到内核 dtb。
+- 机理（**2026-11-05 真机行为佐证**）：ABL 启动 slot b 时会读取 `dtbo_b` 并把其中的 overlay/DFT 应用到内核 dtb；因此 `dtbo_b` 里若残留 Android 的 overlay，会与本项目追加在 `boot.img` 里的 dtb 冲突。
   本项目自带的 dtb 是**追加在 boot.img 里**的（deviceinfo_append_dtb="true"，见 §4）；若 ABL 仍叠加 dtbo_b 的 Android overlay，
   可能与本项目的 dtb 冲突（面板/时钟节点被改），表现为黑屏或早期 hang。
 - pmOS 原文给出的唯一理由是 "dtbo_a reserved for android"：即只保留 a 槽 dtbo 给 Android，把 b 槽 dtbo 让给 Linux。

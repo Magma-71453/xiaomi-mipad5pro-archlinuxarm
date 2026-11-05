@@ -348,7 +348,7 @@ KERNEL_TAG=${CFG_FILE##*/config-}
     printf '%s\n' "在改口令之前，**不要**把设备接入不可信网络，也不要暴露 SSH（\`/usr/bin/sudo /usr/bin/systemctl stop sshd\` 可临时关闭）。"
     printf '%s\n' '' 'initramfs 会在首次开机时自动把根分区扩到你的 `linux` 分区末尾。'
     printf '%s\n' '' '刷错面板 = 黑屏，刷之前先确认你的面板型号（CSOT 用 boot.img，BOE 用 boot-boe-alt.img）。'
-    printf '%s\n' '不要 fastboot erase 任何分区；不要写 boot_a / dtbo_b / system_b / super 等其它分区。'
+    printf '%s\n' '刷写前**必须** `fastboot erase dtbo_b`（不擦则 _b 槽启动黑屏）；除此之外不要 erase 任何分区，也不要写 boot_a / system_b / super 等其它分区。'
     printf '%s\n' '刷前自检：python3 scripts/make-bootimg.py --verify --input boot.img，期望 verify.status = OK。'
     printf '%s\n' '' '完整安装/救援步骤见 INSTALL.md（Release 资产同名文件）与仓库 docs/flash-guide.md。'
     printf '%s\n' '' '## 校验和' '' '```'

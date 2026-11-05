@@ -12,8 +12,10 @@ amplifiers, bq2597x charge-pump fast charging and an x86 layer via FEX-Emu.
 
 ## 硬边界（不可妥协）
 
-1. **只写两个分区**：`boot_b`（内核 + dtb + initramfs）与 `linux`（根文件系统，f2fs / ext4）。
-   `scripts/flash-elish.sh` 内置分区白名单，白名单外的 `fastboot flash` 与一切 `fastboot erase` 都会被拒绝。
+1. **刷写白名单只有三项**：写 `boot_b`（内核 + dtb + initramfs）、写 `linux`（根文件系统，f2fs / ext4）、
+   以及**擦除 `dtbo_b`（装机必需，一次性）**。
+   `dtbo_b` 必须擦：设备走 _b 槽启动，Android 遗留的 dtbo overlay 会与本项目的 dtb 冲突，不擦就黑屏/开不了机（实机已验证）。
+   除此之外的任何 `fastboot flash` / `fastboot erase` 都会被 `scripts/flash-elish.sh` 拒绝。
 2. **仓库不跟踪任何二进制**（镜像、`.ko`、`.dtb`、`.tar.zst` 等），产物只落到 `output/`，已被 `.gitignore` 忽略。
 3. **缺陷追踪只有一份**：`bug.md`；决策记录在 `docs/decisions.md`。
 

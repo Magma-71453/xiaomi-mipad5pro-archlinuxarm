@@ -1,6 +1,6 @@
 # 刷机指南（xiaomi-elish · Arch Linux ARM）
 
-本文件是**唯一的真机刷入操作说明**。所有分区写入只涉及两个分区：
+本文件是**唯一的真机刷入操作说明**。整个流程只动三个分区：写 `boot_b`、写 `linux`，外加**擦除 `dtbo_b`**（必需）：
 
 | 分区标签 | 设备节点（**用 `by-partlabel` 查**） | 容量 | 内容 | 写入方式 |
 |---|---|---|---|---|
@@ -12,8 +12,10 @@
 （`model = 'Xiaomi Mi Pad 5 Pro (CSOT)'`），因此默认产物 `boot.img` 用
 `sm8250-xiaomi-elish-csot.dtb`；BOE 备选产物是 `boot-boe-alt.img`（文件名即区分）。
 
-例外只有一条：**一次性** `fastboot erase dtbo_b`，必须显式加 `--allow-dtbo-erase` 且执行时二次确认
-（依据 D-009）。本项目脚本对 `dtbo_b` **只擦不写**：`--flash dtbo_b=...` 在任何开关下都 exit 2。
+`dtbo_b` 的**一次性 erase 是装机必需步骤，不是可选例外**：设备用 _b 槽启动，ABL 会读 `dtbo_b`，
+Android 留下的 dtbo overlay 与本项目的 dtb 冲突 → 黑屏/开不了机。实机已确认（`dtbo_b` = `sde43` / 32 MiB，
+擦除后全零）。脚本仍把它做成显式门控（`--allow-dtbo-erase` + 二次确认）以免误擦；
+本项目对 `dtbo_b` **只擦不写**：`--flash dtbo_b=...` 在任何开关下都 exit 2。
 
 > **所有刷写与格式化都只能在宿主机执行**：设备上的旧系统既没有 `fastboot`/`adb`，也没有 `mkfs.f2fs`。
 > 设备侧仅用于"看分区/看日志"。
@@ -183,7 +185,7 @@ scripts/flash-elish.sh --flash boot_b=<img> --boot-sha256 <sha>    # --boot-sha2
 4. 全都找不到时：dry-run 只 WARN，并**直接打印可复制的** `--root-sha256 <实际值>` / `--boot-sha256 <实际值>`、
    sidecar 命令与 `scripts/collect-manifest.sh` 三个修法；`--execute` 则直接拒绝执行。
 
-### d.1（可选）擦 dtbo_b —— D-009 一次性例外
+### d.1（必需）擦 dtbo_b —— 不擦则 _b 槽启动黑屏
 
 ```bash
 scripts/flash-elish.sh --execute --allow-dtbo-erase --confirm-erase dtbo_b --erase dtbo_b
@@ -191,7 +193,8 @@ scripts/flash-elish.sh --execute --allow-dtbo-erase --confirm-erase dtbo_b --era
 
 三重条件：`--execute` + `--allow-dtbo-erase` + 二次确认（`--confirm-erase dtbo_b` 或交互输入）。
 只发出一条 `fastboot erase dtbo_b`，结果写进 `output/20261024/FLASH-LOG`（审计会复核，erase 记录只可能是 dtbo_b）。
-回退：dtbo_b 内容不可恢复，但 `boot.img` 里的 DTB 段不受影响；开机异常就重刷 `boot_b`。
+回退：dtbo_b 原内容（Android 的 dtbo overlay）不会被本项目备份。回 Android 时需从官方 fastboot 包里
+取出原厂 `dtbo.img` 再 `fastboot flash dtbo_b <dtbo.img>`。`boot.img` 里的 DTB 段不受影响；开机异常先重刷 `boot_b`。
 
 ### d.2 只刷根文件系统（linux）—— 排障时用，日常用 d.0b
 

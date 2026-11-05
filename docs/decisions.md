@@ -198,3 +198,26 @@
 - 落盘：`configs/rootfs/etc/makepkg.conf(+conf.d)` 为真相源，设备副本已同步；旧配置备份
   `/etc/makepkg.conf.bak-20261104-004012`、`/etc/makepkg.conf.d.bak-20261104-004012`。
 - 回退：还原上述备份并把 `BUILDENV` 的 `ccache` 改回 `!ccache`。
+
+## D-020 装机三件事的实机校正：erase dtbo_b 必需、扇区是 4096B、无 recovery 分区
+
+- 背景：文档长期按「只写 boot_b + linux 两个分区」「GPT 扇区 512B」「有 recovery 分区」三个前提写成，
+  与真机不符，会直接导致装机失败。2026-11-05 在平板自身的 Linux 上做**只读**实测后校正。
+- 实测 1（**`erase dtbo_b` 是必需步骤**）：设备走 _b 槽启动，ABL 读 `dtbo_b`；Android 遗留的 dtbo overlay
+  与本项目追加进 `boot.img` 的 dtb 冲突 → 黑屏/开不了机。设备上 `dtbo_b` = `sde43`、32 MiB，
+  擦除后内容全零。故 D-009 的「一次性例外」升级为**装机流程的正式步骤**；
+  脚本仍保留 `--allow-dtbo-erase` + 二次确认的门控，目的从"通常不该擦"变为"防误擦"。
+- 实测 2（**GPT 逻辑扇区 = 4096 B**）：`blockdev --getss /dev/sda` = 4096、`--getpbsz` = 4096；
+  总 61,880,320 个 4096B 扇区 = 253,461,790,720 B = 236.05 GiB；`first-lba=6`、`last-lba=61,880,314`、
+  `table-length=64`。`parted`/`fdisk`/`sfdisk` 的 `unit: sectors` 用**这个**扇区口径；
+  而 `blockdev --getsz` 与 `/sys/class/block/*/size` 仍是 **512B 为单位**（495,042,560）。
+  旧文档按 512B 推导的算例全部作废。
+- 实测 3（**没有 recovery 分区**）：分区表里不存在 recovery；进入恢复环境的唯一方式是
+  `fastboot boot <recovery.img>`（下载到内存运行，不写任何分区，重启即失效）。
+- 实测 4（当前分区布局，供装机参考）：`userdata`(sda34) start=2,686,976 size=7,811,071；
+  ESP(sda35, 无 name, EFI System) start=10,498,048 size=122,112；`linux`(sda36) start=10,620,160
+  size=51,259,904（≈195.5 GiB）。校验：`10,498,048 + 122,112 = 10,620,160`。
+  A/B 槽位在另一组 LUN `/dev/sde`：`boot_a`=sde12 / `boot_b`=sde37 / `dtbo_a`=sde18 / `dtbo_b`=sde43。
+- 边界：以上只改**文档与真值记录**；脚本的写分区白名单不变（仍只有 `boot_b` / `linux`），
+  `dtbo_b` 依旧**只擦不写**。
+- 落盘：`INSTALL.md`、`docs/partitioning.md`、`docs/flash-guide.md`、`AGENTS.md` §2、`README.md`。

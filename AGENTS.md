@@ -19,7 +19,11 @@
 
 ## 2. 硬性约束（违反即报废）
 
-1. **刷写只允许 boot_b 和 linux 两个分区**，其它分区一律不许碰。
+1. **刷写白名单：`boot_b`（写 boot.img）、`linux`（写 rootfs）、`dtbo_b`（**只允许 erase**）**，其它分区一律不许碰。
+   - `dtbo_b` 的一次性 erase 是**装机必需步骤**，不是可选项：Android 留在 `dtbo_b` 的 overlay 会与本项目的
+     dtb 冲突，_b 槽启动时直接黑屏/开不了机。实机已确认（`dtbo_b` = sde43 / 32 MiB，擦除后全零）。
+   - 刷写脚本把它做成显式门控（`--allow-dtbo-erase` + 二次确认），是为了不让人误擦，
+     不是为了"通常不该擦"。`dtbo_b` 以外的任何 `erase` 仍然一律拒绝。
 2. 构建产物只放 output/YYYYMMDD/，并写 MANIFEST。
 3. **仓库不跟踪任何二进制**。
 4. **bug.md 是唯一的缺陷台账**（格式见第 8 节）。
