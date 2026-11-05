@@ -37,7 +37,7 @@ LBA 2 … 33      主分区项数组（128 项 × 128 字节 = 16 KiB = 32 个 5
 LBA 34 …        第一个可用扇区
 …
 LBA T-34        最后一个可用扇区
-LBA T-33 … T-1  备份分区项数组
+LBA T-33 … T-2  备份分区项数组（32 个扇区）
 LBA T-1         备份 GPT 头
 ```
 
@@ -90,7 +90,7 @@ Sector size (logical/physical): 4096B/4096B     ← 逻辑 4096 B，见 §5.4
 下一个分区.Start = 上一个分区.End + 1
 ```
 
-少算 1（`Start = End`）→ 与上一个分区重叠，`parted` 报 `Error: You requested a partition from …`。
+少算 1（新分区的 `Start` 正好等于上一个分区的 `End`）→ 重叠，`parted` 报 `Error: You requested a partition from …`。
 多算 1（中间留 1 个空扇区）→ 不报错，但浪费 512 B，且容易在核对时被自己搞糊涂。
 
 ### 1.4 对齐
@@ -224,7 +224,7 @@ linux   预计字节 = ____________
 
 1. `E = T − 34`？若 `userdata` 的 `End` 明显小于 `T − 34`，说明磁盘尾部还有别的分区（例如 `metadata`、厂商分区），**不要假设 `userdata` 是最后一个**——此时 `linux` 的结束扇区不能直接用 `E`，而要沿用 `userdata` 原来的 `End`（本文公式本来就是用 `E`，所以没问题），但「磁盘尾部没被占满」这件事要在 `print` 里确认清楚。
 2. `E − S + 1` 与 `Size` 列相等？
-3. `S` 是 2048 的整数倍？（通常是 8192，天然对齐）
+3. `S` 是 2048 的整数倍？（示例 `4096000` ÷ 2048 = 2000，天然对齐）
 
 ---
 
@@ -277,7 +277,7 @@ U = L − 1
 
 | 步骤 | 计算 | 结果 |
 |---|---|---|
-| `S` | 来自 `print` | 8192 |
+| `S` | 来自 `print` | 4096000 |
 | `E` | 来自 `print` | 500118158 |
 | `T` | 来自 `print` | 500118192 |
 | 边界自检 | `T − 34` | 500118158 ✅ |
@@ -331,13 +331,13 @@ U = L − 1
 Error: The location 500118158s is outside of the device /dev/block/sda.
 ```
 
-→ 这是好事：越界会被拦。真正危险的是**没越界但算错**，例如把 4096 B 设备的 `L` 算小了 8 倍，`linux` 会变成 1.6 TiB 的申请（越界被拦）或反过来只拿到 1/8 的空间（不报错，装到一半才发现太小）。所以务必用本设备 `print` 出来的数字重算。
+→ 这是好事：越界会被拦。真正危险的是**方向相反**的那种错：把 4096 B 设备的扇区号（同一个物理位置上，它只有 512 B 扇区号的 1/8）用到 512 B 设备上，`parted` 不会报错，但 `linux` 只有预期的八分之一——装到一半才发现太小。所以务必用目标设备 `print` 出来的数字重算。
 
 ### 5.5 四个常见算术错误
 
 | 错误 | 表现 | 后果 |
 |---|---|---|
-| `U = S + 保留GiB × 2097152`（忘了 −1） | 与 `linux` 的 `Start` 差 1 | `parted` 报 `You requested a partition from …` 或建出 1 扇区重叠（前者更常见） |
+| `U = S + 保留GiB × 2097152`（忘了 −1） | 每个边界都偏 1 个扇区 | **不会报错**：`userdata` 多 1 扇区、`linux` 少 1 扇区。只有核对表能发现（这也是核对表存在的理由） |
 | `L = U`（忘了 +1） | `linux.Start` = `userdata.End` | 重叠，直接报错 |
 | `linux` 结束写成 `T`（而不是 `T−34`） | 越界 | `Error: The location …s is outside of the device …` |
 | 4096 B 设备沿用 512 B 的 `2097152` | 保留空间变成 1/8 | 不报错，但 `userdata` 只剩 4 GiB、Android 起不来 |
@@ -381,7 +381,7 @@ Error: The location 500118158s is outside of the device /dev/block/sda.
 
 | 步骤 | 期望 | 失败时 |
 |---|---|---|
-| `e2fsck` | 以 `… clean, N/N free blocks` 之类结尾，退出码 0 | 报错就必须先修好，**不要**带错误继续缩 |
+| `e2fsck` | 以 `… clean, N/N free blocks` 之类结尾，退出码 `0`（干净）或 `1`（已修正） | 退出码 `≥2` 就是错误，必须先修好，**不要**带错误继续缩 |
 | `resize2fs` | `The filesystem on /dev/block/sda36 is now N (4k) blocks long.` | 报 `Nothing to do!` = 已经比目标小；报 `Bad magic number` = 加密或走错设备 |
 | `dumpe2fs` | `Block count` × `Block size` ≤ 32 GiB | 超了说明第 2 步没生效 |
 
@@ -528,7 +528,7 @@ Information: You may need to update /etc/fstab.
 1. 数字先写纸上；
 2. 一次只输入一条命令；
 3. 每条之后 `print`；
-4. 不确认就 `quit`，不要在提示符上「试试看」。
+4. 任何一条命令的回显与纸上数字对不上，立刻 `quit` 重来，不要在提示符上「试试看」。
 
 ---
 
@@ -649,11 +649,11 @@ printf '%d\n' 0x800000000       # 34359738368
 
 期望只有 `userdata`，且 `End` = `E`（= `T − 34`）。
 
-5. 重启回 recovery，Wipe → **Format Data**；
+5. 同一个 recovery 里 Wipe → **Format Data**（菜单不可用就重启回 recovery 再做）；
 6. 重启进 Android。
 
-> 已实测：在一份 500118192 扇区的磁盘映像上，`rm` 掉 `linux` 后 `resizepart 1 500118158s` 能把 `userdata` 恢复成
-> `4096000s … 500118158s`（`Size` = 496022159s），与出厂布局一致。
+> 已实测：在一份 500118192 扇区的磁盘映像上（`userdata` 是 1 号、`linux` 是 2 号），`rm` 掉 `linux` 后
+> `resizepart 1 500118158s` 能把 `userdata` 恢复成 `4096000s … 500118158s`（`Size` = 496022159s），与出厂布局一致。
 
 ### 9.3 目标 C：刷官方包恢复出厂
 
@@ -691,7 +691,7 @@ printf '%d\n' 0x800000000       # 34359738368
 
 ## 10. 失败场景手册
 
-每条都是「现象 → 原因 → 处理」。带 `>` 的引用是 `parted` 的真实报错文本（已在 parted 3.8 上复现）。
+每条都是「现象 → 原因 → 处理」。`text` 代码块里的报错是 `parted` 的真实输出文本（已在 parted 3.8 上复现）。
 
 ### F1 `Error: Could not stat device /dev/block/sda - No such file or directory.`
 
@@ -732,7 +732,7 @@ will remain in use. You should reboot now before making further changes.
 
 ### F7 `Error: You requested a partition from …s to …s (sectors a..b). The closest location we can manage is …`
 
-- **原因**：请求的范围与已有分区重叠（最常见：`L` 少加了 1，或 `U` 忘记 −1）。
+- **原因**：请求的范围与已有分区重叠（最常见：`L` 写成 `U`，少加了 1）。
 - **处理**：**不要**接受 "closest location"——它会建出一个不是你想要的边界的分区。`print` 看实际空闲区间，回 §5 重算。
 
 ### F8 `Error: The location …s is outside of the device /dev/block/sda.`
@@ -818,7 +818,7 @@ data on this disk will be lost. Do you want to continue?
 
 - **现象**：`linux` 容量只有预期的 1/8（不报错），或 `mkpart` 越界（报错）。
 - **原因**：1 GiB 用了 2097152 而不是 262144。
-- **处理**：回 §5.2 用本设备的扇区大小重算。**这一类错误不会自己暴露**，只能靠 §8 第 4 层核对字节数。
+- **处理**：回 §5.2 用目标设备的扇区大小重算。**这一类错误不会自己暴露**，只能靠 §8 第 4 层核对字节数。
 
 ### F20 建完分区但 Android 起不来（预期行为）
 
@@ -867,7 +867,7 @@ fastboot 核对：linux = 0x__________ → ______ 字节  ✅❌
 
 | 编号 | 事项 | 状态 |
 |---|---|---|
-| P-1 | 本设备 GPT **逻辑扇区到底是 512 B 还是 4096 B** | 未实测。本文两套算例都给了，以 `parted print` 为准 |
+| P-1 | 目标设备 GPT **逻辑扇区到底是 512 B 还是 4096 B** | 未实测。本文两套算例都给了，以 `parted print` 为准 |
 | P-2 | 全新（未擦 `dtbo_b`）设备按本文流程能否一次启动 | 未验证；测试设备的 `dtbo_b` 已为空。见 `INSTALL.md` 4.5 |
 | P-3 | 加密 `userdata` 上 `resize2fs` 的真实报错文本 | 由机理推断为 `Bad magic number`，未在真机复现 |
 | P-4 | 分区表损坏后的 EDL（9008）救援 | 本项目未验证，按不可逆处理 |

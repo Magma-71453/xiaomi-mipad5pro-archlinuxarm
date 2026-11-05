@@ -210,7 +210,7 @@ fi
 
 # ------------------------------------------------------------ 4) initramfs ----
 stage "打 initramfs"
-# 额外工具树：f2fs-tools（首次安装时在挂载 rootfs 前离线 resize.f2fs 扩容到整个 195 GiB）
+# 额外工具树：f2fs-tools（首次安装时在挂载 rootfs 前离线 resize.f2fs 扩到 linux 分区末尾）
 # 及其依赖的 glibc 库。设备旧 initramfs 一直带这些文件，2026-11-04 重构建时漏掉过一次。
 EXTRA_ARGS=()
 EXTRA_DIR=${EXTRA_DIR:-$BUILD/initramfs-extra}
@@ -312,7 +312,7 @@ KERNEL_TAG=${CFG_FILE##*/config-}
     printf ' + INSTALL.md\n'
     printf -- '- 构建时间: %s\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf '| 资产 | 用途 | 大小 (B) |\n|---|---|---|\n'
-    printf '| boot.img | **CSOT** 面板（本机面板）：fastboot flash boot_b boot.img | %s |\n' "$(stat -c%s "$DIST/boot.img")"
+    printf '| boot.img | **CSOT** 面板设备用：fastboot flash boot_b boot.img | %s |\n' "$(stat -c%s "$DIST/boot.img")"
     printf '| boot-boe-alt.img | **BOE** 面板，同上 | %s |\n' "$(stat -c%s "$DIST/boot-boe-alt.img")"
     printf '| initramfs.cpio.gz | 已打进两个 img 的 initramfs（含面板驱动 + GPU 固件） | %s |\n' "$(stat -c%s "$DIST/initramfs.cpio.gz")"
     printf '| modules.tar.zst | 内核模块，解到 linux 分区的 /lib/modules | %s |\n' "$(stat -c%s "$DIST/modules.tar.zst")"
@@ -335,8 +335,8 @@ KERNEL_TAG=${CFG_FILE##*/config-}
     printf '%s\n' 'fastboot flash linux linux-rootfs-f2fs.img    # 会清空 linux 分区！'
     printf '%s\n' 'fastboot flash boot_b boot.img                # BOE 面板换成 boot-boe-alt.img'
     printf '%s\n' 'fastboot reboot' '```'
-    printf '%s\n' '' '首次开机：自动登录 magma（默认密码 <redacted>，立即 passwd 修改）；initramfs 会自动把根分区扩容到 195 GiB。'
-    printf '%s\n' '' '刷错面板 = 黑屏，刷之前确认面板型号（本机是 CSOT）。'
+    printf '%s\n' '' '首次开机：自动登录默认用户（口令由构建脚本生成，登录后立即 `passwd` 修改）；initramfs 会自动把根分区扩到你的 `linux` 分区末尾。'
+    printf '%s\n' '' '刷错面板 = 黑屏，刷之前先确认你的面板型号（CSOT 用 boot.img，BOE 用 boot-boe-alt.img）。'
     printf '%s\n' '不要 fastboot erase 任何分区；不要写 boot_a / dtbo_b / system_b / super 等其它分区。'
     printf '%s\n' '刷前自检：python3 scripts/make-bootimg.py --verify --input boot.img，期望 verify.status = OK。'
     printf '%s\n' '' '完整安装/救援步骤见 INSTALL.md（Release 资产同名文件）与仓库 docs/flash-guide.md。'

@@ -51,7 +51,7 @@
 | 阶段 | 耗时 | 备注 |
 |---|---|---|
 | 下载资产 | 5–30 分钟 | 取决于带宽；rootfs 压缩包约 1.3 GiB 量级 |
-| SHA256 校验 | 1–3 分钟 | 16 GiB 镜像要读一遍 |
+| SHA256 校验 | 1–3 分钟 | 压缩包读完很快；解压后的 16 GiB 镜像还要再读一遍 |
 | 解压 rootfs | 1–3 分钟 | 解压后**实占 16 GiB**，不是稀疏文件 |
 | 解锁 bootloader | 一次性，可能需等待数天 | 小米账号绑定后有等待期 |
 | 分区（第 3 章） | 10–20 分钟 | 主要在核对数字，命令本身几秒 |
@@ -119,9 +119,9 @@
 
 三种查法（按可靠性排序）：
 
-1. Android 里（root shell）：`adb shell` 后 `cat /proc/cmdline`；
-2. recovery 里（第 3 章会进）：`adb shell cat /proc/cmdline`；
-3. 已经装好 Linux 的设备：`sudo dmesg | grep -iE 'panel|nt36523'`。
+1. Android 里（root shell）：`/usr/bin/adb shell "cat /proc/cmdline"`；
+2. recovery 里（第 3 章会进）：`/usr/bin/adb shell "cat /proc/cmdline"`；
+3. 已经装好 Linux 的设备：`/usr/bin/sudo /usr/bin/dmesg | /usr/bin/grep -iE 'panel|nt36523'`。
 
 三条都拿不到时，先刷 `boot.img`（CSOT）。**黑屏就重刷 `boot-boe-alt.img`**——刷错面板不会损坏硬件，只是屏幕不亮，设备仍能被 `fastboot devices` 看到。这是一个安全的二分法。
 
@@ -154,6 +154,13 @@ command -v fastboot adb zstd sha256sum python3
 - 装完 `android-udev` 后重新插拔 USB 线，规则才会生效。
 
 `fastboot` 的默认位置是 `/usr/bin/fastboot`；若你的系统上不在这个路径，用 `command -v fastboot` 查出来，后文照抄该绝对路径。
+
+另外两样东西不在 Release 里，需要自己准备：
+
+| 物品 | 来源 | 用在哪 |
+|---|---|---|
+| OFRP recovery 镜像（`recovery.img`） | `https://github.com/ymdzq/OFRP-device_xiaomi_elish/releases` | 第 3 章分区时临时启动 |
+| 静态 aarch64 `parted`（`parted.7z`） | 上游 Armbian 指南给的链接（renegade-project.tech） | 第 3 章分区时 push 进设备 |
 
 ### 0.5 开始前必须确认的三件事
 
@@ -229,8 +236,10 @@ done
 
 ```sh
 cd /srv/elish
-/usr/bin/sha256sum -c SHA256SUMS.txt
+/usr/bin/sha256sum -c /srv/elish/SHA256SUMS.txt
 ```
+
+（`sha256sum -c` 会按**当前目录**解析清单里的文件名，所以要先 `cd` 到 `/srv/elish`；`cd` 的目标是绝对路径。）
 
 期望每个文件一行 `<文件名>: OK`，退出码 0：
 
@@ -302,7 +311,7 @@ linux-rootfs-f2fs.img.zst: OK
 
 小米的解锁流程由官方工具控制，第三方无法绕过。步骤：
 
-1. 设备：设置 → 关于平板 → 连续点击「MIUI 版本」7 次，打开开发者选项；
+1. 设备：设置 → 设备信息（部分版本叫「关于平板」）→ 全部参数 → 连续点击「MIUI 版本」7 次，打开开发者选项；
 2. 设置 → 更多设置 → 开发者选项 → 打开「USB 调试」和「OEM 解锁」；
 3. 同一页面点「设备解锁状态」→ 按提示绑定小米账号与设备（需要联网，按页面要求操作）；
 4. 主机（Windows 或虚拟机）安装小米官方的 Mi Unlock 工具，登录**同一个**小米账号，USB 连接设备，按工具提示解锁；
@@ -389,6 +398,9 @@ linux-rootfs-f2fs.img.zst: OK
 ## 3. 用 parted 创建 `linux` 分区（重点）
 
 本章是**新设备安装的必经步骤**，不是可选的兜底流程。做完之后 Android 侧数据即失效。
+
+> 想先弄清原理（GPT 结构、扇区换算、算错会怎样、写坏了怎么救），或者要回滚到 Android，见
+> [docs/partitioning.md](docs/partitioning.md)——那是本章的展开版。
 
 ### 3.1 为什么要缩 `userdata`
 
@@ -495,7 +507,7 @@ fastboot（主机） --fastboot boot--> recovery（跑在设备内存里） --ad
 
 - 期望最后一行打印 `parted (GNU parted) 3.x`。
 - `parted` 必须是 **aarch64 静态二进制**。Android 上没有 glibc，动态链接的会报 `no such file or directory` 或 `CANNOT LINK EXECUTABLE`。
-- 来源：上游 Armbian 指南提供的 `parted.7z`（renegade-project.tech）解压即得。解压需要 `7z`：
+- 来源：上游 Armbian 指南提供的 `parted.7z`（renegade-project.tech），解压即得。解压需要 `7z`：
 
 ```sh
 /usr/bin/7z x /srv/elish/parted.7z -o/srv/elish
@@ -503,7 +515,7 @@ fastboot（主机） --fastboot boot--> recovery（跑在设备内存里） --ad
 /usr/bin/file /srv/elish/parted
 ```
 
-  期望 `ELF 64-bit LSB executable, ARM aarch64, statically linked`。
+  第三条命令期望输出 `ELF 64-bit LSB executable, ARM aarch64, statically linked`。
 
 - 主机上虽然也有 `/usr/bin/parted`，但**主机版 parted 看不到设备的 UFS**，只能用来演练（见附录 A）。
 
@@ -674,7 +686,7 @@ linux 结束         E = 500118158
 /usr/bin/adb shell "dumpe2fs -h /dev/block/sda36 | head -20"
 ```
 
-- 第 1 步：强制检查文件系统一致性。期望 `... clean, ...` 结尾且退出码 0；有 `Fix?` 之类交互已被 `-y` 自动回答，但仍要看清楚它改了什么。
+- 第 1 步：强制检查文件系统一致性。退出码 `0` = 干净、`1` = 已修正问题（都算通过），`≥2` 是错误，**不要**带着错误继续；`Fix?` 之类交互已被 `-y` 自动回答，但仍要看清楚它改了什么。
 - 第 2 步：把文件系统缩到 **31G**（比新分区 32 GiB 小一点，留余量）。期望 `The filesystem on /dev/block/sda36 is now ... blocks long.`
 - 第 3 步：`Block count` × `Block size` 应 ≤ 32 GiB。
 - `resize2fs` 收缩期间断电或报错可能损伤文件系统。**没有备份就不要执行本节。**
@@ -824,7 +836,7 @@ printf '%d\n' 0x3321651E00
 期望 `linux -> ../../sdaNN`。
 
 - 这一步**只能在 Linux 启动之后做**：`/dev/disk/by-partlabel/` 是 udev 建的，recovery 里没有；
-- 看不到这个链接，但 `getvar partition-size:linux` 有值 → 标签名不是 `linux`，回 3.7 用 `name <编号> linux` 改名（`parted` 支持在设备运行时改标签，但改完要重启才能让 udev 重建链接）。
+- 看不到这个链接，但 `getvar partition-size:linux` 有值 → 标签名不是 `linux`。改名要重新进 recovery 做（运行中的 Linux 占着 `/dev/block/sda`，不能在线改），命令是 `/cache/parted /dev/block/sda name <编号> linux`，改完重启让 udev 重建链接。
 
 ### 3.9 风险与救援
 
@@ -928,6 +940,7 @@ echo $((IMG_BYTES / 4096))          # 得到要读的 4 KiB 块数，例如 4099
 上游的 elish 教程（Armbian、postmarketOS wiki）在刷 `boot_b` 之前都要求：
 
 ```text
+# 上游 Armbian / postmarketOS wiki 的做法 —— 本教程不执行这条命令
 fastboot erase dtbo_b
 ```
 
@@ -1136,11 +1149,11 @@ Finished. Total time: …
 
 交互式询问 SSID 与密码，由 NetworkManager 写入 profile（权限 0600），密码不会出现在命令行历史里。
 
-也可以直接 `nmcli`：
+也可以直接 `nmcli`。**注意加 `sudo`**：本系统的 polkit 没有认证代理，普通用户改 NetworkManager 配置会被拒绝。
 
 ```sh
-/usr/bin/nmcli device wifi list
-/usr/bin/nmcli device wifi connect "<wifi-ssid>" password "<wifi-password>"
+/usr/bin/sudo /usr/bin/nmcli device wifi list
+/usr/bin/sudo /usr/bin/nmcli device wifi connect "<wifi-ssid>" password "<wifi-password>"
 /usr/bin/ip -br addr show
 ```
 
@@ -1157,9 +1170,9 @@ Finished. Total time: …
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| `No network with SSID '<wifi-ssid>' found` | SSID 拼错、隐藏网络、5 GHz 信道不被支持 | `/usr/bin/nmcli device wifi rescan` 后重试；隐藏网络用 `hidden yes` |
+| `No network with SSID '<wifi-ssid>' found` | SSID 拼错、隐藏网络、5 GHz 信道不被支持 | `/usr/bin/sudo /usr/bin/nmcli device wifi rescan` 后重试；隐藏网络用 `hidden yes` |
 | 没有无线接口 | `rfkill` 被 block，或 MAC 全 0 导致接口起不来 | `/usr/bin/rfkill list`；`/usr/bin/sudo /usr/bin/systemctl restart wlp-mac.service` |
-| 有接口但拿不到地址 | DHCP 失败 | `/usr/bin/nmcli device status` 看状态；`/usr/bin/sudo /usr/bin/journalctl -u NetworkManager -b --no-pager \| tail -30` |
+| 有接口但拿不到地址 | DHCP 失败 | `/usr/bin/sudo /usr/bin/nmcli device status` 看状态；`/usr/bin/sudo /usr/bin/journalctl -u NetworkManager -b --no-pager \| tail -30` |
 
 ### 7.3 （可选）开 SSH
 
@@ -1193,7 +1206,7 @@ Finished. Total time: …
 | 9 | 状态栏 | `/usr/bin/pgrep -a -x waybar` | 一行 `waybar` | [9.4](#94-桌面起不来) |
 | 10 | 触摸 | `/usr/bin/cat /proc/bus/input/devices \| /usr/bin/grep -i NVT` | `NVTCapacitiveTouchScreen` | [9.4](#94-桌面起不来) |
 | 11 | 声卡 | `/usr/bin/cat /proc/asound/cards` | 含 `sm8250` | [10](#10-已知限制) |
-| 12 | 音频服务 | `/usr/bin/wpctl status \| head -20` | 有 Sink（内置扬声器） | [10](#10-已知限制) |
+| 12 | 音频服务 | `/usr/bin/wpctl status \| /usr/bin/head -20` | 有 Sink（内置扬声器） | [10](#10-已知限制) |
 | 13 | 蓝牙控制器 | `/usr/bin/sudo /usr/bin/btmgmt info` | `Index list with 1 item`，地址非 `00:00:00:00:00:00` | [9.5](#95-蓝牙适配器消失) |
 | 14 | 蓝牙服务 | `/usr/bin/systemctl is-active bluetooth` | `active` | [9.5](#95-蓝牙适配器消失) |
 | 15 | 失败单元 | `/usr/bin/systemctl --failed --no-pager` | 只有 `systemd-networkd-wait-online.service` | [10](#10-已知限制) |
@@ -1280,7 +1293,7 @@ Finished. Total time: …
 验证：
 
 ```sh
-/usr/bin/ls -l /lib/modules/"$(/usr/bin/uname -r)"/kernel/drivers/bluetooth/ | head
+/usr/bin/ls -l /lib/modules/"$(/usr/bin/uname -r)"/kernel/drivers/bluetooth/ | /usr/bin/head
 ```
 
 **注意**：`sudo tar … && depmod -a` 里的 `depmod` 会以普通用户运行并报 `Permission denied`——`depmod` 前面必须**单独再写一次 `sudo`**。这是最常见的静默失败。
@@ -1295,7 +1308,7 @@ Finished. Total time: …
 
 1. `/etc/pacman.conf` 已预置 `DisableSandboxFilesystem` / `DisableSandboxSyscalls`（本内核没有 Landlock），**不要删**，否则 pacman 会因沙箱初始化失败而报错；
 2. **内核不由 pacman 管理**：内核与 initramfs 在 `boot_b`，rootfs 里没有内核包。装 `linux-aarch64` 只会往根分区塞一份用不上的内核，不要装；
-3. 大更新后重启一次确认能正常回来：
+3. 大更新后重启一次，确认能正常回来。
 
 ```sh
 /usr/bin/sudo /usr/bin/systemctl reboot
@@ -1349,18 +1362,17 @@ Finished. Total time: …
 
 ### 9.3 卡开机 / 反复重启
 
-1. 先进 fastboot，确认两个分区都读得到：
-
-```sh
-/usr/bin/fastboot getvar partition-size:boot_b
-/usr/bin/fastboot getvar partition-size:linux
-```
-
+1. 先进 fastboot，确认两个分区都读得到（见下方第一步的命令）；
 2. 两个都有值 → 重刷 `boot_b`（不动数据），重启；
 3. 仍不行 → 重刷 `linux`（**数据会丢**）；
-4. 能进到 tty 但系统卡住 → 看上一次启动的日志：
+4. 能进到 tty 但系统卡住 → 看上一次启动的日志（见下方第二步的命令）。
 
 ```sh
+# 第一步：确认分区存在
+/usr/bin/fastboot getvar partition-size:boot_b
+/usr/bin/fastboot getvar partition-size:linux
+
+# 第二步：设备上，看上一次启动的日志
 /usr/bin/sudo /usr/bin/journalctl -b -1 --no-pager -o short-monotonic | /usr/bin/tail -50
 ```
 
@@ -1470,7 +1482,7 @@ with the current setting?
 |---|---|---|
 | 只想让 Android 能开机 | recovery 里 Wipe → **Format Data** | 清空 `userdata`；a 槽没动过，Android 能起来 |
 | 彻底恢复单系统 | 刷小米官方 fastboot 包 | **会写全部分区，`linux` 分区被覆盖，Linux 数据全丢** |
-| 保留 Linux，只把空间还给 Android | 见 `docs/partitioning.md` 第 9 节 | 需要删掉并重建分区，Linux 数据全丢 |
+| 保留 Linux，只把空间还给 Android | 见 [docs/partitioning.md](docs/partitioning.md) 第 9 节 | 需要删掉并重建分区，Linux 数据全丢 |
 
 刷官方包属于「放弃 Linux」的路径，与本项目「只写两个分区」的约束冲突，本教程不提供具体命令。**刷之前先把 `linux` 分区里要留的东西拷出来。**
 
@@ -1534,7 +1546,7 @@ with the current setting?
 | 看分区表（recovery） | `/usr/bin/adb shell "/cache/parted /dev/block/sda unit s print"` |
 | 进 recovery | `/usr/bin/fastboot boot /srv/elish/recovery.img` |
 | 从 recovery 回 fastboot | `/usr/bin/adb reboot bootloader` |
-| 校验下载 | `/usr/bin/sha256sum -c /srv/elish/SHA256SUMS.txt` |
+| 校验下载 | `cd /srv/elish && /usr/bin/sha256sum -c /srv/elish/SHA256SUMS.txt` |
 | 解压 rootfs | `/usr/bin/zstd -d /srv/elish/linux-rootfs-f2fs.img.zst -o /srv/elish/linux-rootfs-f2fs.img` |
 | 看根分区 | `/usr/bin/findmnt /` |
 | 看剩余空间 | `/usr/bin/df -h /` |
