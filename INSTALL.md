@@ -205,7 +205,7 @@ command -v fastboot adb zstd sha256sum python3
 | `mango-0.18.3-aarch64.tar.zst` | MangoWM 运行时（**已内置在 rootfs 里**，只在你自行重建 rootfs 时需要） | 可选 |
 | `MANIFEST` | 产物清单：文件名、目标分区、SHA256、大小 | ✅ 建议 |
 | `SHA256SUMS.txt` | `sha256sum -c` 用的校验和 | ✅ 建议 |
-| `RELEASE-NOTES.md` | 本次发布说明（含**默认登录凭据**、快速安装命令、变更点） | ✅ 建议 |
+| `RELEASE-NOTES.md` | 本次发布说明（含**默认登录凭据**、快速安装命令、变更点）。它同时是 Release 页面正文，官网页面直接可见 | ✅ 建议 |
 
 `linux-rootfs-f2fs.img.zst` 之所以是压缩包：GitHub Release 单个资产上限 2 GiB，16 GiB 的镜像必须先压缩。
 
