@@ -38,6 +38,10 @@ REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # scripts/audit-hygiene.sh 会把仓库内的 .build/ 判成产物污染。需要换位置用 --build-dir。
 BUILD=${BUILD:-$(cd "$REPO/.." && pwd)/.build}
 DATE=${DATE:-$(TZ=Asia/Shanghai date +%Y%m%d)}
+# 发布镜像的默认口令：写进 RELEASE-NOTES，首次开机后必须修改。
+# 只影响本脚本生成的说明文档；真正的口令由 build-rootfs.sh 写入镜像
+# （构建镜像时要传同一个 ELISH_DEFAULT_PASSWORD）。
+RELEASE_DEFAULT_PASSWORD=${RELEASE_DEFAULT_PASSWORD:-<见构建时设置>}
 TAG=${TAG:-$(TZ=Asia/Shanghai date +%y/%m/%d)}
 JOBS=${JOBS:-}
 PUBLISH=1
@@ -335,7 +339,14 @@ KERNEL_TAG=${CFG_FILE##*/config-}
     printf '%s\n' 'fastboot flash linux linux-rootfs-f2fs.img    # 会清空 linux 分区！'
     printf '%s\n' 'fastboot flash boot_b boot.img                # BOE 面板换成 boot-boe-alt.img'
     printf '%s\n' 'fastboot reboot' '```'
-    printf '%s\n' '' '首次开机：自动登录默认用户（口令由构建脚本生成，登录后立即 `passwd` 修改）；initramfs 会自动把根分区扩到你的 `linux` 分区末尾。'
+    printf '%s\n' '' '## 默认登录凭据（首次开机后请立即修改）' ''
+    printf '%s\n' '| 项 | 值 |' '|---|---|'
+    printf '%s\n' '| 用户名 | `magma` |'
+    printf '%s\n' "| 口令 | \`${RELEASE_DEFAULT_PASSWORD}\` |"
+    printf '%s\n' ''
+    printf '%s\n' "首次开机 tty1 会以 \`magma\` 自动登录并直接进入 MangoWM 桌面，**不需要输入口令**；进入后请打开终端执行 \`/usr/bin/passwd\` 设置你自己的口令（若提示需要当前口令，用 \`/usr/bin/sudo /usr/bin/passwd magma\`，sudo 已配置免密）。"
+    printf '%s\n' "在改口令之前，**不要**把设备接入不可信网络，也不要暴露 SSH（\`/usr/bin/sudo /usr/bin/systemctl stop sshd\` 可临时关闭）。"
+    printf '%s\n' '' 'initramfs 会在首次开机时自动把根分区扩到你的 `linux` 分区末尾。'
     printf '%s\n' '' '刷错面板 = 黑屏，刷之前先确认你的面板型号（CSOT 用 boot.img，BOE 用 boot-boe-alt.img）。'
     printf '%s\n' '不要 fastboot erase 任何分区；不要写 boot_a / dtbo_b / system_b / super 等其它分区。'
     printf '%s\n' '刷前自检：python3 scripts/make-bootimg.py --verify --input boot.img，期望 verify.status = OK。'

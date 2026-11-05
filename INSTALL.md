@@ -167,10 +167,14 @@ command -v fastboot adb zstd sha256sum python3
 | # | 确认项 | 怎么确认 | 不满足会怎样 |
 |---|---|---|---|
 | 1 | 数据已备份 | 自己确认 | 第 3 章会清空 Android 数据，无法恢复 |
-| 2 | 拿到了默认登录口令 | Release 说明里有 `magma` 的默认口令 | 刷完能开机但**登不进去**，只能重刷 |
+| 2 | 知道默认登录口令 | Release 说明的「默认登录凭据」一节给出 `magma` 的口令 | 需要口令的操作（如 `su`、SSH）做不了 |
 | 3 | 知道自己的面板型号 | 见 [0.3](#03-两种面板先确认再下载) | 黑屏（可重刷恢复），多花 10 分钟 |
 
-第 2 条容易被忽略，单独说明：默认用户是 `magma`，默认口令由构建脚本**随机生成、只在构建日志里打印一次、不写入镜像任何文件**。发布者必须把它写进 Release 说明。如果你的 Release 说明里是 `<redacted>` 或压根没写，**先别开始刷**——找发布者要，或让发布者用环境变量 `ELISH_DEFAULT_PASSWORD` 重新构建。
+第 2 条单独说明：默认用户是 `magma`。**本 Release 的默认口令写在 Release 说明的「默认登录凭据」一节**（本项目约定为 `elish`）。
+
+首次开机时 tty1 会以 `magma` 自动登录并直接进桌面，**不需要输入口令**；但 `su`、SSH 登录等操作需要它。拿到口令后第一件事就是改掉（见 §7.1）。
+
+若你拿到的是自己构建的镜像，构建时若设置了环境变量 `ELISH_DEFAULT_PASSWORD` 就用该值，否则口令是**随机生成、只在构建日志打印一次**的——以构建日志为准。
 
 ---
 
@@ -1141,13 +1145,19 @@ Finished. Total time: …
 /usr/bin/passwd
 ```
 
-- 先输入**当前**口令（Release 说明里的默认口令），再输入两遍新口令；
+- 先输入**当前**口令（Release 说明里的默认口令，本项目为 `elish`），再输入两遍新口令；
 - 期望 `passwd: password updated successfully`；
 - 默认用户是 `magma`，`root` 默认锁定（用 `sudo`，不要用 `su`）。
 
-为什么必须改：默认口令是**同一个镜像共享**的，任何拿到这个 Release 的人都知道它。
+为什么必须改：默认口令是**同一个镜像共享**的，任何拿到这个 Release 的人都知道它。改完之后，SSH 和其他需要口令的入口才真正属于你。
 
-> 如果拿不到默认口令（Release 说明写的是 `<redacted>` 或没有），刷完也登不进去。此时只能重刷 rootfs，或请发布者用 `ELISH_DEFAULT_PASSWORD` 重新构建一版。
+> 注意：`passwd` 会先要求输入**当前**口令。若你确实不知道当前口令，可以用免密的 `sudo` 直接改（`magma` 属于 `wheel` 且配置了 `NOPASSWD`）：
+>
+> ```sh
+> /usr/bin/sudo /usr/bin/passwd magma
+> ```
+>
+> 这条命令不需要当前口令，只需要物理接触设备（或已在桌面会话里）。
 
 ### 7.2 连接 Wi-Fi
 
@@ -1584,7 +1594,7 @@ with the current setting?
 | `erase dtbo_b` | 有，且是第一步 | **没有** | 硬约束：除 `boot_b`/`linux` 外不做任何写与擦除；见 [4.5](#45-关于-dtbo_b为什么本教程不擦) |
 | 刷入顺序 | 先 `flash linux`，再 `flash boot_b` | 先 `flash boot_b`，再 `flash linux` | 顺序不影响结果；先刷小的 `boot_b` 能更早发现设备问题 |
 | 切槽 | `fastboot set_active b` | `fastboot --set-active=b` | 等价写法；本教程统一用选项形式 |
-| 首次登录 | USB 网络 + `ssh root@172.16.42.1`（默认 `root/1234`） | 本地 tty 自动登录 `magma` | 不需要额外网络配置；口令由构建脚本生成而非固定值 |
+| 首次登录 | USB 网络 + `ssh root@172.16.42.1`（默认 `root/1234`） | 本地 tty 自动登录 `magma`，口令见 Release 说明 | 不需要额外网络配置；首登后必须改口令 |
 | 根文件系统 | ext4 | f2fs | 本项目的选择，见 `docs/flash-guide.md` |
 | 分区容量 | 示例写死 32.5GB→100% | **由操作者自己决定** | 不同机型容量差异大，写死会误导 |
 
