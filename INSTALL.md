@@ -2,7 +2,8 @@
 
 从一台跑着 Android 的小米平板 5 Pro，到一台能日常使用的 Arch Linux ARM 平板。
 
-全程只写两个分区：`boot_b`（内核 + dtb + initramfs）和 `linux`（根文件系统）。
+全程只写两个分区：`boot_b`（内核 + dtb + initramfs）和 `linux`（根文件系统）；
+另外**必须擦一次 `dtbo_b`**（不擦则 `_b` 槽启动黑屏/开不了机），除此之外任何分区都不写、不擦。
 每一步都给出**要执行的命令、期望看到的输出、失败了怎么办**。不需要事先懂分区表，照着做即可。
 
 | 项目 | 值 |
@@ -35,7 +36,7 @@
 [设备]  临时启动 recovery → adb root → 卸载 /data
         → parted：缩小 userdata + 新建 linux 分区                     （第 3 章）
    ↓
-[设备]  回 fastboot → 刷 boot_b（按面板二选一）                       （第 4 章）
+[设备]  回 fastboot → erase dtbo_b（必需）→ 刷 boot_b（按面板二选一）   （第 4 章）
         → 刷 linux（rootfs，16 GiB 镜像，耗时数分钟）                 （第 5 章）
         → 切到 b 槽 → 重启                                           （第 5 章）
    ↓
@@ -81,21 +82,44 @@
 
 ## 0. 前置条件与风险声明
 
-### 0.1 只会写两个分区
+### 0.1 写两个分区 + 擦一个分区
 
-| 分区（GPT 名） | 内容 | 大小 | 写入命令 | 允许 |
-|---|---|---|---|---|
-| `boot_b` | 内核 `Image.gz` + dtb + initramfs | 固定 **192 MiB**（393216 扇区 = `0xC000000` 字节） | `fastboot flash boot_b` | ✅ |
-| `linux` | 根文件系统（f2fs） | **由你决定**（≥ 16 GiB，建议 ≥ 32 GiB） | `fastboot flash linux` | ✅ |
-| `boot_a` `dtbo_a` `dtbo_b` `system_b` `vendor_boot` `super` `userdata` `persist` `modem` `metadata` `esp` … | — | — | — | ❌ 一律不碰 |
+本项目对存储的写操作只有三类，其它一律禁止：
 
-为什么只要两个分区：
+| # | 操作 | 分区（GPT 名） | 内容 | 大小 | 命令 | 允许 |
+|---|---|---|---|---|---|---|
+| 1 | **写** | `boot_b` | 内核 `Image.gz` + dtb + initramfs | 固定 **192 MiB**（`0xC000000` 字节；按 512 B 计价 393,216 扇区，按 4096 B 计价 49,152 扇区） | `/usr/bin/fastboot flash boot_b` | ✅ |
+| 2 | **写** | `linux` | 根文件系统（f2fs） | **由你决定**（≥ 16 GiB，建议 ≥ 32 GiB） | `/usr/bin/fastboot flash linux` | ✅ |
+| 3 | **擦除（一次性，必需）** | `dtbo_b` | Android 留在 _b 槽的 dtbo overlay | 实测 **32 MiB**（`0x2000000` = 33,554,432 B） | `/usr/bin/fastboot erase dtbo_b` | ✅ **必需** |
+
+第 3 类是**装机流程的正式步骤**，不是「可选例外」、也不是排障时才做：设备从 `_b` 槽启动时 ABL 会读 `dtbo_b`，Android 留下的 overlay 叠到本项目 `boot.img` 里的 dtb 上会冲突，结果是**黑屏 / 开不了机**（真机实测；机理与证据见 [4.5](#45-为什么必须擦-dtbo_b)）。本机 `dtbo_b` 实测就是 32 MiB 全零，即擦除后的状态。
+
+**其余一切 `flash` / `erase` 仍然禁止**，明确列出：
+
+| 禁止对象 | 说明 |
+|---|---|
+| `boot_a`、`dtbo_a` | Android 的 a 槽引导；`dtbo_a` 与本项目无关，**绝不能擦** |
+| `super`、`system_b`、`vendor_boot_a`、`vendor_boot_b` | 动态分区与 Android 系统镜像 |
+| `modem`、`metadata`、`misc` | 基带、加密元数据、槽位元数据；写错可能开不了机或连 fastboot 都回不去 |
+| `userdata`、`persist`、`persistbak`、`keystore`、`frp`、`countrycode`、`devinfo` | 用户数据与设备身份信息 |
+| `switch`、`ssd`、`dbg`、`bk01`…`bk010`、`oops`、`splash`、`logfs`、`mtdblk`、`logdump`、`minidump`、`rawdump`、`cust`、`rescue`、`oem_misc1`、`ffu` | 厂商备份、日志、救援槽（本机 `sfdisk -d` 实测存在），一个都不要碰 |
+| ESP（本机 `sda35`，没有分区名） | 别的教程会建它；本项目不建、不写 |
+
+> 唯一的例外中的例外：**回滚到 Android 时**，允许把原厂 `dtbo.img` 刷回 `dtbo_b`（`/usr/bin/fastboot flash dtbo_b <原厂dtbo.img>`）。除 `erase` 与这次原厂写回之外，`dtbo_b` 不接受任何镜像。见 [9.9](#99-回到-android)。
+>
+> 另外，第 5 章的 `fastboot --set-active=b` 会让 bootloader 改写槽位元数据（通常在 `misc` 里）——那不是 `flash`/`erase` 一个分区，而是 A/B 切槽的唯一方式，见 [5.3](#53-切到-b-槽)。
+
+两个容易搞混的事实：
+
+- **`boot_b` / `dtbo_b` 不在 `/dev/sda` 上。** A/B 槽的分区在另一组 LUN `/dev/sde`（本机实测：`boot_a = sde12`、`boot_b = sde37`、`dtbo_a = sde18`、`dtbo_b = sde43`）；`sda` 上是 `userdata` / ESP / `linux` 等。所以 `parted /dev/block/sda print` 的输出里**找不到** `boot_b`，这是正常的。
+- **不同 LUN 的逻辑扇区大小可能不同，要逐个确认。** 本机实测 `sda`~`sdf` 六个 LUN **全部是 4096 B**；但容量数字仍有两种口径：`boot_b` 的「393,216 扇区」是**内核 512 B 计数**（393,216 × 512 = 192 MiB = 49,152 × 4096），而 `parted` 在 `sde` 上给出的扇区号是 4096 B 计。所以对**每个 LUN** 单独跑 `blockdev --getss`，并注意区分「内核 512 计数」与「设备逻辑扇区」。
+
+为什么只需要写这么少：
 
 - 内核和 initramfs 塞进 Android 的 B 槽 boot 分区，ABL（小米的 bootloader）直接从 `boot_b` 引导 Linux，不需要 U-Boot，也不需要改 `super`；
 - 根文件系统单独占一块物理分区，不走 `super` 动态分区，少一层失败面；
-- 出问题只要重刷这两个分区，Android 的 a 槽、`super`、`modem`、`persist` 全都没动。
-
-**本教程不包含任何 `fastboot erase`。** 上游 Armbian 与 postmarketOS 的 elish 教程里有一步 `fastboot erase dtbo_b`，本教程不用它，原因见 [4.5](#45-关于-dtbo_b为什么本教程不擦)。
+- `dtbo_b` 只在 `_b` 槽启动时被读，擦掉它**只影响 Linux 的启动路径**，Android 的 a 槽（读 `dtbo_a`）一点都不受影响；
+- 出问题只要重刷这两个分区、必要时再擦一次 `dtbo_b`，Android 的 a 槽、`super`、`modem`、`persist` 全都没动。
 
 ### 0.2 风险声明
 
@@ -103,6 +127,7 @@
 |---|---|---|
 | 缩小并重建 `userdata`（第 3 章） | Android 侧全部用户数据（照片、应用、账号、聊天记录）丢失 | **不可逆**，先备份 |
 | 刷 `linux`（第 5 章） | `linux` 分区原有内容全部丢失 | **不可逆** |
+| 擦除 `dtbo_b`（第 4 章，必需） | `_b` 槽启动时不再叠加 Android 的 dtbo overlay（这正是 Linux 能开机的前提）；Android a 槽读的是 `dtbo_a`，不受影响 | **可逆，但需要原厂文件**：回 Android 前执行 `/usr/bin/fastboot flash dtbo_b <原厂dtbo.img>` 即可写回；本项目**不提供**该文件，需从小米官方 fastboot 包中取。它只影响 Linux 的启动路径，不动任何数据区 |
 | 解锁 bootloader | 清空全部数据，失去官方保修 | **不可逆**（可重新上锁，但数据已空） |
 | 刷错面板的 `boot.img` | 开机黑屏（系统其实起来了，只是屏幕没点亮） | 可逆，重刷另一个镜像 |
 | 分区表写坏 | 可能连 fastboot 都进不去 | **EDL（9008）救援本项目未验证，视为不可逆** |
@@ -159,7 +184,7 @@ command -v fastboot adb zstd sha256sum python3
 
 | 物品 | 来源 | 用在哪 |
 |---|---|---|
-| OFRP recovery 镜像（`recovery.img`） | `https://github.com/ymdzq/OFRP-device_xiaomi_elish/releases` | 第 3 章分区时临时启动 |
+| OFRP recovery 镜像（`recovery.img`） | `https://github.com/ymdzq/OFRP-device_xiaomi_elish/releases` | 第 3 章分区时用 `fastboot boot` 临时启动（本机**没有** recovery 分区，见 [3.3.1](#331-取得-recovery-镜像)） |
 | 静态 aarch64 `parted`（`parted.7z`） | 上游 Armbian 指南给的链接（renegade-project.tech） | 第 3 章分区时 push 进设备 |
 
 ### 0.5 开始前必须确认的三件事
@@ -411,29 +436,31 @@ linux-rootfs-f2fs.img.zst: OK
 
 ### 3.1 为什么要缩 `userdata`
 
-`linux` **不是出厂分区**。出厂 GPT 里没有它，所以全新设备上直接执行 `fastboot flash linux` 一定失败。平板的 UFS 上，出厂时最后一个分区是 `userdata`，它一直延伸到磁盘末尾（只给备份 GPT 留 33 个扇区）。
+`linux` **不是出厂分区**。出厂 GPT 里没有它，所以全新设备上直接执行 `fastboot flash linux` 一定失败。平板的 UFS 上，出厂时最后一个分区是 `userdata`，它一直延伸到 GPT 的 `last-lba`（本机实测 `last-lba = 61,880,314`；其后的 5 个扇区留给备份分区项数组与备份 GPT 头）。
 
 想要一块给 Linux 用的独立空间，只有两个来源：
 
 1. **从 `userdata` 尾部切一块**（本章做法，也是上游 Armbian 的做法）；
 2. 占用 `super` 里的动态分区（postmarketOS 的一种做法）——会牵动 `system_b`/`vendor_b`，空间还受 `super` 总大小限制，本项目不采用。
 
-磁盘布局前后对比（扇区号为示例，你的数字不同）：
+磁盘布局前后对比（**4096 B 扇区**，数字取自本机实测；你设备上的数字以自己 `parted unit s print` 为准）：
 
 ```text
-改动前：
-[ p1 … p33 ][ userdata 34 ..................................... 磁盘末尾 ][备份 GPT]
-             4096000s                                      500118158s
+改动前（全新设备：userdata 是最后一个分区）：
+[ sda1 … sda33 ][ userdata sda34 ............................. 到 last-lba ][备份 GPT]
+                  2686976s                                   61880314s
 
-改动后：
-[ p1 … p33 ][ userdata 34 ....... ][ linux 35 ................. 磁盘末尾 ][备份 GPT]
-             4096000s      71204863s 71204864s             500118158s
+改动后（本机实测：中间多了一个 ESP，linux 从 sda36 开始）：
+[ sda1 … sda33 ][ userdata sda34 ][ ESP sda35 ][ linux sda36 ......... 到 last-lba ][备份 GPT]
+                  2686976s  10498046s 10498048s 10620160s          61880063s   61880314s
 ```
+
+> ⚠️ **本机（测试设备）的现状与「全新设备」不同**：它已经装过一次 Linux，`sfdisk -d` 显示 `userdata` 后面还有 ESP（`sda35`，无分区名）和 `linux`（`sda36`）。也就是说**本机的第 3 章已经做完了**：照抄本章命令会与已存在的 `sda35`/`sda36` 重叠。`parted print` 里已经有 `linux` 就必须跳过本章（见下方预检）。
 
 关键点：
 
-- 两个分区**不能共用扇区**，所以 `linux` 的起始 = 新 `userdata` 的结束 + 1；
-- `linux` 的结束沿用原来的 `userdata` 结束扇区，这样不碰备份 GPT；
+- 两个分区**不能共用扇区**，所以 `linux` 的起始 = 新 `userdata` 的结束 + 1（本机两者中间还空了 1 个扇区，是为了把 `linux` 对齐到 1 MiB，见 [3.5](#35-计算新分区的起止扇区)）；
+- `linux` 的结束沿用原来的 `userdata` 结束扇区（= `last-lba`），这样不碰备份 GPT；
 - 分区名（GPT `Name`）必须是 `linux`，因为内核 cmdline 用 `root=PARTLABEL=linux` 找根文件系统。
 
 > **先做一次预检**：如果你的 `parted print` 里**已经**有名字为 `linux` 的分区，说明之前装过。不要再建一个，直接跳到第 4 章。本章只适用于「全新、只有 Android」的设备。
@@ -458,17 +485,26 @@ fastboot（主机） --fastboot boot--> recovery（跑在设备内存里） --ad
 
 用 OrangeFox Recovery 的 elish 版本：`https://github.com/ymdzq/OFRP-device_xiaomi_elish/releases`，下载 `.img` 文件，放到 `/srv/elish/recovery.img`（文件名以实际为准，下文统一按这个路径写）。
 
+**本机没有 recovery 分区**（真机确认）：
+
+```sh
+/usr/bin/ls /dev/disk/by-partlabel/ | /usr/bin/grep -i recovery    # 无任何输出
+/usr/bin/sfdisk -d /dev/sda | /usr/bin/grep -i recovery            # 无任何输出
+```
+
+`by-partlabel` 覆盖所有 LUN（`boot_*`/`dtbo_*` 在 `/dev/sde` 上，也能看到），`sda` 的 36 个分区里也确实没有 `recovery`，所以不存在「进入 recovery 分区」这回事，也**没有 `recovery` 分区可以 `fastboot flash`**。本机进入 recovery 的唯一方式是 [3.3.2](#332-临时启动-recovery不写任何分区) 的 `fastboot boot <recovery.img>`：把镜像下载到内存里运行。任何让你 `fastboot flash recovery ...` 的教程都不适用于这台设备。
+
 #### 3.3.2 临时启动 recovery（不写任何分区）
 
 ```sh
 /usr/bin/fastboot boot /srv/elish/recovery.img
 ```
 
-- `fastboot boot` 把镜像**加载到内存**运行，**不写 flash**，所以不违反「只写两个分区」。
+- `fastboot boot` 把镜像**加载到内存**运行，**不写 flash、不擦任何分区**，所以不违反 [0.1](#01-写两个分区--擦一个分区) 的白名单；**重启即失效**，不在任何分区上留下痕迹。
 - 期望：约 10–30 秒后屏幕出现 OrangeFox 界面。
 - 失败：`FAILED (remote: 'unknown command')` 或 `FAILED (remote: 'Boot image not supported')` → 用 3.3.3 的备用方案。
 
-#### 3.3.3 备用：把 recovery 临时刷到 `boot_b`
+#### 3.3.3 备用：把 recovery 临时放到 `boot_b`
 
 ```sh
 /usr/bin/fastboot flash boot_b /srv/elish/recovery.img
@@ -476,6 +512,7 @@ fastboot（主机） --fastboot boot--> recovery（跑在设备内存里） --ad
 ```
 
 - 这只临时占用 `boot_b`（此时 Linux 内核还没刷，本来就是空的），**仍在白名单内**。
+- 注意：这**不是**「刷 recovery 分区」——本机没有 recovery 分区，这里只是把 recovery 镜像临时放进 `boot_b` 引导一次。
 - 分区做完后必须刷回 `boot.img`（第 4 章），否则设备会一直进 recovery。
 - 如果中途断电，设备停在 recovery：重进 fastboot 重刷即可，不会变砖。
 
@@ -541,7 +578,9 @@ fastboot（主机） --fastboot boot--> recovery（跑在设备内存里） --ad
 /usr/bin/adb shell "readlink -f /dev/block/by-name/userdata"
 ```
 
-期望形如 `/dev/block/sda36` → 磁盘是 `/dev/block/sda`（去掉末尾数字）。
+期望形如 `/dev/block/sda34`（本机 `userdata` 是 34 号）→ 磁盘是 `/dev/block/sda`（去掉末尾数字）。
+
+> ⚠️ **别抄错节点**：本机 `sda34` 是 `userdata`，`sda36` 是 `linux`。把 `linux` 节点当 `userdata` 去 `blkid`/`resize2fs`，会动到你的根分区。
 
 若 `by-name` 不存在：
 
@@ -553,47 +592,143 @@ Android 的 ueventd 会建这个目录，OFRP 里一定有。
 
 > **后文统一写 `/dev/block/sda`。** 如果你的实际磁盘节点不同（例如 `/dev/block/sdb`），全文替换。
 
-### 3.4 只读侦察：记录 `userdata` 的起止扇区
+### 3.4 只读侦察：先确认扇区大小，再记录起止扇区
 
 这一步**只读**，不改任何东西。先把现场拍下来。
+
+#### 3.4.1 先确认扇区大小（本机是 4096 B）
+
+**这台设备（xiaomi-elish）的 GPT 逻辑扇区是 4096 B，不是 512 B。** 旧版教程按 512 B 写，套到这台机器上会把 `linux` 算成实际容量的 1/8——这是本项目已经发生过的真实事故（反例见 [3.5](#35-计算新分区的起止扇区)）。
+
+三种口径必须分清：
+
+| 口径 | 怎么读 | 本机实测 | 用途 |
+|---|---|---|---|
+| **设备逻辑扇区** | `/usr/bin/blockdev --getss /dev/sda` | **4096 B** | ← `parted` / `sfdisk -d` 的扇区号单位就是它 |
+| 设备物理扇区 | `/usr/bin/blockdev --getpbsz /dev/sda` | **4096 B** | 只影响对齐与性能，不影响扇区编号 |
+| **内核的 512 B 计数** | `/usr/bin/blockdev --getsz /dev/sda` | **495,042,560** | 恒以 512 B 计价；495,042,560 ÷ 8 = 61,880,320 |
+| 同上（sysfs） | `/usr/bin/cat /sys/class/block/sda/size` | **495,042,560** | 同一个数，**不能**直接填进 `parted` |
+| GPT 扇区号 | `/cache/parted /dev/block/sda unit s print`（recovery 里）或 `/usr/bin/sfdisk -d /dev/sda`（设备 Linux 里） | **61,880,320** | ← 唯一能填进 `parted mkpart` 的数 |
+
+> ⚠️ **最容易错的一步**：`blockdev --getsz` 和 `/sys/class/block/sda/size` 报的是 **512 字节为单位**的计数（495,042,560），而 `parted unit s` / `sfdisk -d` 的 `unit: sectors` 是 **4096 字节**（61,880,320）。两者正好差 8 倍。旧文档就是拿 512 B 口径的计数（500,118,192 / 495,042,560 之类）去和 `parted` 的 `s` 混用，才把分区算错。
+
+本机实测（只读命令的输出；这些命令在**平板自身的 Linux** 里执行。recovery 里没有 `sfdisk`/`blockdev`，用 `parted unit s print` 得到的是同一组扇区号）：
+
+```text
+/dev/sda:
+  逻辑扇区大小 = 4096 B
+  物理扇区大小 = 4096 B
+  总扇区数     = 61,880,320 个 4096 B 扇区
+  总容量       = 253,461,790,720 B = 236.05 GiB
+  GPT, label-id 071844F7-EA12-808F-576B-0D458AC4C09F
+  first-lba = 6,  last-lba = 61,880,314,  table-length = 64
+```
+
+换成 4096 B 扇区后，四个常用常数要重算：
+
+| 量 | 512 B 扇区（旧文档） | **4096 B 扇区（本机）** |
+|---|---|---|
+| 1 GiB 的扇区数 | 2,097,152 | **262,144** |
+| 32 GiB 的扇区数 | 67,108,864 | **8,388,608** |
+| 1 MiB 对齐的扇区数 | 2,048 | **256** |
+| 末尾保留 | `T − 34` | **`last-lba = T − 6`**（本机 61,880,314 = 61,880,320 − 6） |
+
+`first-lba = 6` 表示前 6 个扇区（LBA 0–5）留给保护性 MBR、GPT 头与分区项数组；`last-lba = 61,880,314` 之后还有 5 个扇区（61,880,315–61,880,319）留给备份分区项数组与备份 GPT 头。512 B 时代的「前 34 后 34」在这台设备上**不成立**。
+
+#### 3.4.2 本机实测的完整分区布局（36 个分区）
+
+下面是本机 `sfdisk -d /dev/sda` 的实测数据（**单位是 4096 B 扇区**；`type=` / `uuid=` 字段从略）：
+
+| # | 起始 | 大小 | 结束 | GPT 名 | 备注 |
+|---|---|---|---|---|---|
+| 1 | 6 | 2 | 7 | `switch` | 厂商 |
+| 2 | 8 | 8 | 15 | `ssd` | 厂商 |
+| 3 | 16 | 8 | 23 | `dbg` | 厂商 |
+| 4 | 24 | 8 | 31 | `bk01` | 厂商备份 |
+| 5 | 32 | 32 | 63 | `bk02` | 厂商备份 |
+| 6 | 64 | 64 | 127 | `bk03` | 厂商备份 |
+| 7 | 128 | 128 | 255 | `bk04` | 厂商备份 |
+| 8 | 256 | 128 | 383 | `keystore` | 密钥 |
+| 9 | 384 | 128 | 511 | `frp` | 厂商 |
+| 10 | 512 | 512 | 1023 | `countrycode` | 厂商 |
+| 11 | 1024 | 1024 | 2047 | `misc` | 槽位元数据 |
+| 12 | 2048 | 2048 | 4095 | `bk06` | 厂商备份 |
+| 13 | 4096 | 2048 | 6143 | `logfs` | 日志 |
+| 14 | 6144 | 2048 | 8191 | `ffu` | 厂商 |
+| 15 | 8192 | 4096 | 12287 | `oops` | 厂商日志 |
+| 16 | 12288 | 4096 | 16383 | `devinfo` | 设备信息 |
+| 17 | 16384 | 256 | 16639 | `oem_misc1` | 厂商 |
+| 18 | 16640 | 4096 | 20735 | `metadata` | 加密元数据 |
+| 19 | 20736 | 3840 | 24575 | `bk08` | 厂商备份 |
+| 20 | 24576 | 8192 | 32767 | `splash` | 开机图 |
+| 21 | 32768 | 8192 | 40959 | `bk09` | 厂商备份 |
+| 22 | 40960 | 16384 | 57343 | `persist` | 传感器/校准 |
+| 23 | 57344 | 16384 | 73727 | `persistbak` | `persist` 备份 |
+| 24 | 73728 | 8192 | 81919 | `mtdblk` | 厂商 |
+| 25 | 81920 | 16384 | 98303 | `logdump` | 日志 |
+| 26 | 98304 | 24576 | 122879 | `minidump` | 崩溃转储 |
+| 27 | 122880 | 32768 | 155647 | `rawdump` | 崩溃转储 |
+| 28 | 155648 | 262144 | 417791 | `cust` | 厂商 |
+| 29 | 417792 | 2228224 | 2646015 | `super` | Android 动态分区（≈ 8.5 GiB） |
+| 30 | 2646016 | 32 | 2646047 | `vbmeta_system_a` | 校验 |
+| 31 | 2646048 | 32 | 2646079 | `vbmeta_system_b` | 校验 |
+| 32 | 2646080 | 8128 | 2654207 | `bk010` | 厂商备份 |
+| 33 | 2654208 | 32768 | 2686975 | `rescue` | 救援 |
+| **34** | **2,686,976** | **7,811,071** | **10,498,046** | **`userdata`** | Android 数据（≈ 29.8 GiB / 32 GB 十进制） |
+| **35** | **10,498,048** | **122,112** | **10,620,159** | （无名字） | **ESP**，type `C12A7328-F81F-11D2-BA4B-00A0C93EC93B` |
+| **36** | **10,620,160** | **51,259,904** | **61,880,063** | **`linux`** | 本项目根分区（≈ 195.5 GiB） |
+
+三个关键分区的容量换算：
+
+| 分区 | 扇区数 × 4096 B | 容量 |
+|---|---|---|
+| `userdata`（sda34） | 7,811,071 × 4096 = 31,994,146,816 B | ≈ 29.8 GiB（≈ 32.0 GB 十进制） |
+| ESP（sda35，无分区名） | 122,112 × 4096 = 500,170,752 B | **≈ 477 MiB**（精确 477.0 MiB；实测记录里的 ≈ 476.8 MiB 是同一块分区的粗略值，以 500,170,752 B 为准） |
+| `linux`（sda36） | 51,259,904 × 4096 = 209,960,566,784 B | **≈ 195.5 GiB** |
+
+相邻关系自检（本机数据，必须能对上）：
+
+```text
+10,498,046 + 1 = 10,498,047          # 空 1 个扇区，为了把 ESP/linux 对齐到 1 MiB
+10,498,048 + 122,112 = 10,620,160    # ESP 结束处正好是 linux 起点
+10,620,160 + 51,259,904 = 61,880,064
+last-lba 61,880,314 − 61,880,064 = 250   # 尾部还空 250 个扇区（≈ 1 MiB）
+```
+
+对齐检查（4096 B 扇区下 1 MiB = 256 个扇区，不是 2048）：
+
+```text
+2,686,976 ÷ 256 = 10,496    ✅ userdata 起点对齐
+10,498,048 ÷ 256 = 41,008   ✅ ESP 起点对齐
+10,620,160 ÷ 256 = 41,485   ✅ linux 起点对齐
+```
+
+#### 3.4.3 `parted` 的等价输出与记录模板
 
 ```sh
 /usr/bin/adb shell "/cache/parted /dev/block/sda unit s print"
 ```
 
-输出示例（256 GB 机型；**你的数字一定不同**）：
-
-```text
-Model: SCSI DISK (scsi)
-Disk /dev/block/sda: 500118192s
-Sector size (logical/physical): 512B/4096B
-Partition Table: gpt
-Disk Flags:
-
-Number  Start       End         Size        File system  Name      Flags
- 1      8192s       131071s     122880s                  ...
-...
-34      4096000s   500118158s  496022159s               userdata
-```
-
-逐字段解读：
+`parted` 的输出与上面 3.4.2 的表格是同一份数据，只是排版不同（`Start`/`End`/`Size` 都带 `s` 后缀、单位同样是 4096 B 扇区）。逐字段解读：
 
 | 字段 | 含义 | 本教程怎么用 |
 |---|---|---|
-| `Disk /dev/block/sda: 500118192s` | 磁盘总扇区数（`T`） | 核对「末尾」，也用来判断是否算错 |
-| `Sector size (logical/physical): 512B/4096B` | 逻辑/物理扇区大小 | **决定 1 个 `s` 是多少字节** |
+| `Disk /dev/block/sda: 61880320s` | 磁盘总扇区数（`T`） | 核对「末尾」，也用来判断是否算错 |
+| `Sector size (logical/physical): 4096B/4096B` | 逻辑/物理扇区大小 | **决定 1 个 `s` 是多少字节**：本机 4096 B |
 | `Number` | 分区号 | `rm`、`name` 要用 |
 | `Start` / `End` | 起止扇区，**含端点** | 计算新分区边界 |
 | `Name` | GPT 分区名 | `by-partlabel` 与 `PARTLABEL=linux` 靠它 |
 | `Size` | 扇区数（= End − Start + 1） | 交叉核对 |
 
-把四个数抄到纸上（或记在主机上）：
+把关键数抄到纸上（或记在主机上；下面已经是本机实测值）：
 
 ```text
 userdata 分区号      N = 34
-userdata 起始扇区    S = 4096000
-userdata 结束扇区    E = 500118158
-磁盘总扇区数         T = 500118192
+userdata 起始扇区    S = 2686976
+userdata 结束扇区    E = 10498046
+userdata 扇区数      = 7811071
+磁盘总扇区数         T = 61880320
+最后一个可用扇区     last-lba = 61880314
 ```
 
 再用人类可读的单位交叉核对一次：
@@ -602,13 +737,13 @@ userdata 结束扇区    E = 500118158
 /usr/bin/adb shell "/cache/parted /dev/block/sda print"
 ```
 
-`Size` 列会显示成 `254GB` 这样的值。注意 parted 默认用**十进制**单位（1GB = 10⁹ 字节），不要和 GiB 混；`E − S + 1` 个扇区换算成字节后应该与它接近（差几十 MiB 是正常的，分区表有对齐与保留）。
+`Size` 列会显示成人类可读的容量。注意 parted 默认用**十进制**单位（1GB = 10⁹ 字节），不要和 GiB 混；`E − S + 1` 个扇区换算成字节后应该与它一致——本机 `userdata` 是 7,811,071 × 4096 = 31,994,146,816 B ≈ 32.0 GB ≈ 29.8 GiB。
 
 **关于扇区大小（重要，别跳过）**：
 
-- `parted unit s` 里的 `s` 是 **GPT 逻辑扇区**，不等于固定 512 字节。
-- `print` 显示 `512B/4096B` → 1 扇区 = 512 B；显示 `4096B/4096B` → 1 扇区 = 4096 B。
-- 本文所有算例都按 **512 B 扇区**（1 GiB = 2097152 扇区）。若你的设备是 4096 B 扇区，1 GiB = 262144 扇区，把下文的 `2097152` 换掉即可；`S`/`E` 直接照抄，不需要换算。
+- `parted unit s` 里的 `s` 是 **GPT 逻辑扇区**，本机为 **4096 B**，不是固定 512 字节。
+- `print` 显示 `4096B/4096B` → 1 扇区 = 4096 B；本机就是这种。只有显示 `512B/…` 的设备才按 512 B 算。
+- 本文所有算例都按 **4096 B 扇区**（1 GiB = 262144 扇区、1 MiB = 256 扇区）。若你的设备是 512 B 扇区，`S`/`E` 照抄不用换算，但**所有公式里的 `262144`/`256` 都要换成 `2097152`/`2048`**，并且要用你自己 `print` 出来的数字重算，不要套本机数值。
 - `fastboot getvar partition-size:boot_b` 的 `0xC000000` 是**字节**，与扇区大小无关。
 
 ### 3.5 计算新分区的起止扇区
@@ -617,59 +752,87 @@ userdata 结束扇区    E = 500118158
 
 - `linux` 必须 ≥ **16 GiB**（等于 rootfs 镜像大小，否则第 5 章刷不进去）；
 - 建议 `linux` ≥ 32 GiB，这样首启扩容后还有空间装东西；
-- `userdata` 留多少只影响 Android 侧可用空间，不影响 Linux。
+- `userdata` 留多少只影响 Android 侧可用空间，不影响 Linux；本机现状是 7,811,071 个 4096 B 扇区（31,994,146,816 B ≈ 32.0 GB / 29.8 GiB）。
 
-公式（512 B 扇区，1 GiB = 2097152 扇区）：
+公式（**本机 4096 B 扇区，1 GiB = 262144 扇区**）：
 
 ```text
-U = S + 保留给 userdata 的 GiB × 2097152 − 1     # 新 userdata 的结束扇区
-L = U + 1                                        # linux 的起始扇区
-linux 结束扇区 = E                               # 沿用原来的末尾
-linux 扇区数  = E − L + 1
+U = S + 保留给 userdata 的 GiB × 262144 − 1     # 新 userdata 的结束扇区
+L = U + 1                                        # linux 的起始扇区（建议再对齐到 256 的整数倍）
+linux 结束扇区 = last-lba                        # 本机 61880314，不要用 T − 34
+linux 扇区数  = last-lba − L + 1
+linux 字节数  = linux 扇区数 × 4096
 ```
+
+> `last-lba` 从设备 Linux 里 `/usr/bin/sfdisk -d /dev/sda` 的 `last-lba:` 行读，recovery 里看 `parted print free` 最后一段空闲区间；本机实测 `last-lba = 61,880,314`。`linux` 的结束**不要顶到 `T`**，也不要用 512 B 时代的 `T − 34`。
 
 为什么 `−1` / `+1`：`Start` 与 `End` 都是**含端点**的扇区号，两个相邻分区不能共用同一个扇区。少算 1 个扇区（`L = U`）会重叠，`parted` 直接报错；多算 1 个则留下 1 个扇区的空洞，不报错但对不上核对表。
 
-**算例：256 GB 机型，给 Android 留 32 GiB**
+**算例 1：保留 `userdata` 现状（7,811,071 扇区）——第 3.7 节就用这组数**
 
 | 量 | 计算 | 值 |
 |---|---|---|
-| 1 GiB 的扇区数 | 1024³ ÷ 512 | 2097152 |
-| 保留 32 GiB | 32 × 2097152 | 67108864 扇区 |
-| 新 `userdata` 结束 `U` | 4096000 + 67108864 − 1 | **71204863** |
-| `linux` 起始 `L` | 71204863 + 1 | **71204864** |
-| `linux` 结束 | = `E` | **500118158** |
-| `linux` 扇区数 | 500118158 − 71204864 + 1 | 428913295 扇区 |
-| `linux` 容量 | 428913295 × 512 | 219603607040 B ≈ **204.5 GiB** |
-| 对齐检查 | 71204864 ÷ 2048 | 34768，整除 ✅ |
+| `S` | 本机实测 | 2,686,976 |
+| `U` | 2686976 + 7811071 − 1 | **10498046**（与 `sfdisk -d` 的实测结束扇区一致 ✅） |
+| `L`（不补空隙） | 10498046 + 1 | 10498047（÷256 不整除，`parted` 会警告） |
+| `L`（对齐 1 MiB） | 向上取整到 256 | **10498048**（÷256 = 41008 ✅；本机实测 ESP 正是从 10498048 开始） |
+| `linux` 结束 | `last-lba` | 61880314 |
+| `linux` 扇区数 | 61880314 − 10498048 + 1 | 51382267 扇区 |
+| `linux` 容量 | 51382267 × 4096 | 210461765632 B ≈ **196.0 GiB** |
+| 与实测交叉核对 | 实测 `linux`（sda36）= 51,259,904 扇区 = 195.54 GiB | 差 122,363 扇区 = ESP 122,112 + 尾部 251（61,880,064…61,880,314，含端点；口算常写「还剩 250」）✅ |
 
-对齐说明：`parted` 对未按 1 MiB（2048 扇区）对齐的分区会警告
+算例 1 说明「公式算出来的 `linux` 比本机实测大」不算矛盾：本机多了一个 122,112 扇区的 ESP，而且 `linux` 的结束没顶到 `last-lba`（尾部还空 250 个扇区），两项相加正好是 122,363。
+
+**算例 2：保留 32 GiB（想给 Android 更多空间时）**
+
+| 量 | 计算 | 值 |
+|---|---|---|
+| 1 GiB 的扇区数 | 1024³ ÷ 4096 | **262144** |
+| 保留 32 GiB | 32 × 262144 | 8388608 扇区 |
+| 新 `userdata` 结束 `U` | 2686976 + 8388608 − 1 | **11075583** |
+| `linux` 起始 `L` | 11075583 + 1 | **11075584** |
+| `linux` 结束 | `last-lba` | **61880314** |
+| `linux` 扇区数 | 61880314 − 11075584 + 1 | 50804731 扇区 |
+| `linux` 容量 | 50804731 × 4096 | 208096178176 B ≈ **193.8 GiB** |
+| `userdata` 容量 | 8388608 × 4096 | 34359738368 B = 正好 **32 GiB** |
+| 对齐检查 | 11075584 ÷ 256 | 43264，整除 ✅ |
+
+对齐说明：`parted` 对未按 1 MiB 对齐的分区会警告。**本机 4096 B 扇区下 1 MiB = 256 个扇区，不是 2048**：
 
 ```text
-Warning: The resulting partition is not properly aligned for best performance: <start>s % 2048s != 0s
+Warning: The resulting partition is not properly aligned for best performance: <start>s % 256s != 0s
 ```
 
-这只是性能提示，不阻止创建。想让警告消失，把 `L` 向上取整到 2048 的整数倍，并把多出的扇区从 `userdata` 里扣掉：
+这只是性能提示，不阻止创建。想让警告消失，把 `L` 向上取整到 256 的整数倍：
 
 ```text
-L = ((U + 1 + 2047) ÷ 2048) × 2048
-U = L − 1
+L = ((U + 1 + 255) ÷ 256) × 256
 ```
 
-**不同机型的参考值**（`T` 与 `E` 以你的 `print` 为准；`E = T − 34`）：
+取整后会空出 `L − (U + 1)` 个扇区（本机是 1 个：`10,498,047` 空着，`linux` 从 `10,498,048` 开始）。两种处理都合法：
 
-| 机型标称 | 磁盘总扇区 `T` | 给 `userdata` | `U` | `L` | `linux` 容量 |
+- **留空隙**（本机做法）：`U` 不变，中间空 1 个扇区；
+- **把空隙给 Android**：`U = L − 1`，`userdata` 多吃几个扇区。
+
+**不要**写 `L = U`——那是重叠，`parted` 直接拒绝。
+
+**不同保留量的参考值（本机实测：4096 B 扇区，`S = 2,686,976`，`last-lba = 61,880,314`）**：
+
+| 给 `userdata` | 扇区数 | `U` | `L` | `linux` 扇区数 | `linux` 容量 |
 |---|---|---|---|---|---|
-| 128 GB | 250069680 | 32 GiB | 71204863 | 71204864 | ≈ 85.3 GiB |
-| 256 GB | 500118192 | 32 GiB | 71204863 | 71204864 | ≈ 204.5 GiB |
-| 256 GB | 500118192 | 64 GiB | 138313727 | 138313728 | ≈ 172.5 GiB |
+| 8 GiB | 2097152 | 4784127 | 4784128 | 57096187 | ≈ 217.8 GiB |
+| 32 GiB | 8388608 | 11075583 | 11075584 | 50804731 | ≈ 193.8 GiB |
+| 64 GiB | 16777216 | 19464191 | 19464192 | 42416123 | ≈ 161.8 GiB |
+| 现状 7,811,071 扇区 | 7811071 | 10498046 | 10498048 | 51382267 | ≈ 196.0 GiB |
 
-把这四个值也抄下来：
+前几行按整 GiB 保留，`L = U + 1` 天然对齐（`S` 本身是 256 的倍数，GiB 的扇区数 262,144 也是 256 的倍数）；最后一行是「现状」，`L` 比 `U + 1` 多 1 个扇区，那是留给 1 MiB 对齐的空隙。
+
+把这组值抄下来（第 3.7 节按「现状」算例）：
 
 ```text
-新 userdata 结束   U = 71204863
-linux 起始         L = 71204864
-linux 结束         E = 500118158
+新 userdata 结束   U = 10498046
+linux 起始         L = 10498048（对齐后；不补空隙是 10498047）
+linux 结束         last-lba = 61880314
 ```
 
 ### 3.6 （可选）先缩小 `userdata` 的文件系统
@@ -680,10 +843,10 @@ linux 结束         E = 500118158
 先判定：
 
 ```sh
-/usr/bin/adb shell "blkid /dev/block/sda36"
+/usr/bin/adb shell "blkid /dev/block/sda34"
 ```
 
-（`sda36` 换成 3.3.7 查到的 `userdata` 节点）
+（`sda34` 换成 3.3.7 查到的 `userdata` 节点；本机 `userdata` 就是 `sda34`，`sda36` 是 `linux`，别抄错）
 
 | 输出 | 结论 |
 |---|---|
@@ -697,13 +860,13 @@ linux 结束         E = 500118158
 收缩三步，**顺序不能颠倒**（先缩文件系统，再缩分区；反过来文件系统会超出分区）：
 
 ```sh
-/usr/bin/adb shell "e2fsck -f -y /dev/block/sda36"
-/usr/bin/adb shell "resize2fs /dev/block/sda36 31G"
-/usr/bin/adb shell "dumpe2fs -h /dev/block/sda36 | head -20"
+/usr/bin/adb shell "e2fsck -f -y /dev/block/sda34"
+/usr/bin/adb shell "resize2fs /dev/block/sda34 31G"
+/usr/bin/adb shell "dumpe2fs -h /dev/block/sda34 | head -20"
 ```
 
 - 第 1 步：强制检查文件系统一致性。退出码 `0` = 干净、`1` = 已修正问题（都算通过），`≥2` 是错误，**不要**带着错误继续；`Fix?` 之类交互已被 `-y` 自动回答，但仍要看清楚它改了什么。
-- 第 2 步：把文件系统缩到 **31G**（比新分区 32 GiB 小一点，留余量）。期望 `The filesystem on /dev/block/sda36 is now ... blocks long.`
+- 第 2 步：把文件系统缩到 **31G**（比新分区 32 GiB 小一点，留余量）。期望 `The filesystem on /dev/block/sda34 is now ... blocks long.`
 - 第 3 步：`Block count` × `Block size` 应 ≤ 32 GiB。
 - `resize2fs` 收缩期间断电或报错可能损伤文件系统。**没有备份就不要执行本节。**
 
@@ -711,6 +874,8 @@ linux 结束         E = 500118158
 
 > ⚠️ 从这里开始，**每条命令都立即写入磁盘**。`parted` 没有「保存」和「撤销」——`quit` 只是退出，不是提交。
 > 所以：数字先抄在纸上，逐条执行，每条之后 `print` 复查。
+
+> ⚠️ 下面的命令只适用于**还没有 `linux`（也没有 ESP）**的设备。本机已经装过 Linux（`sda35` ESP + `sda36` linux），在本机执行会与已有分区重叠——本机应直接跳到第 4 章。
 
 进入交互式 `parted`：
 
@@ -738,10 +903,10 @@ linux 结束         E = 500118158
 - 若报 `Error: Partition doesn't exist.` → 分区号抄错了，回 `print` 重看。
 
 ```text
-(parted) mkpart userdata ext4 4096000s 71204863s
+(parted) mkpart userdata ext4 2686976s 10498046s
 ```
 
-按 `S` 到 `U` 重建 `userdata`（`4096000s` → 你的 `S`，`71204863s` → 你的 `U`）。
+按 `S` 到 `U` 重建 `userdata`（`2686976s` → 你的 `S`，`10498046s` → 你的 `U`，即[算例 1](#35-计算新分区的起止扇区)）。
 
 - `mkpart` 的第一个参数**就是分区名**，所以建完 `Name` 列直接显示 `userdata`；
 - 第二个参数是「文件系统类型提示」，写 `ext4`/`f2fs` 都只影响提示，不影响实际内容（真正的文件系统由第 5 章的镜像决定）；
@@ -754,17 +919,17 @@ linux 结束         E = 500118158
 确认新 `userdata` 的 `Number`（通常复用被删掉的 34）与起止扇区。**若 `Name` 列为空**，补一条 `name <编号> userdata`。
 
 ```text
-(parted) mkpart linux f2fs 71204864s 500118158s
+(parted) mkpart linux f2fs 10498048s 61880314s
 ```
 
-按 `L` 到 `E` 创建 `linux`（`71204864s` → 你的 `L`，`500118158s` → 你的 `E`）。
+按 `L` 到 `last-lba` 创建 `linux`（`10498048s` → 你的 `L`，`61880314s` → 你的 `last-lba`）。全新设备上 `linux` 会拿到 35 号（本机因为已经有 ESP 35，`linux` 是 36 号），以 `print` 为准。
 
 可能出现的输出与处理：
 
 | 输出 | 含义 | 处理 |
 |---|---|---|
 | （无输出） | 成功 | 继续 |
-| `Warning: The resulting partition is not properly aligned for best performance: …` | 起始扇区没按 2048 对齐 | 可以继续（性能略差）；想消除就 `rm` 掉重算，见 [3.5](#35-计算新分区的起止扇区) |
+| `Warning: The resulting partition is not properly aligned for best performance: …` | 起始扇区没按 256 对齐（4096 B 扇区下 1 MiB = 256 扇区） | 可以继续（性能略差）；想消除就 `rm` 掉重算，见 [3.5](#35-计算新分区的起止扇区) |
 | `Error: You requested a partition from …s to …s` + `The closest location we can manage is …` | 起止与已有分区重叠 | 停下来核对 `L`/`E`，不要接受「最接近的位置」，它会建出错误的分区 |
 | `Error: Can't have the end before the start!` | 起止写反了 | 重新输入 |
 | `Error: The location …s is outside of the device` | 结束扇区超过磁盘 | `E` 抄错了，回 `print` |
@@ -779,12 +944,12 @@ linux 结束         E = 500118158
 | 检查项 | 期望 |
 |---|---|
 | 分区数量 | 比原来多 1 个（`userdata` + `linux`） |
-| 新 `userdata` 的 `Start`/`End` | 与 `S` / `U` **完全一致** |
-| `linux` 的 `Start`/`End` | 与 `L` / `E` **完全一致** |
+| 新 `userdata` 的 `Start`/`End` | 与 `S` / `U` **完全一致**（本机 2,686,976 / 10,498,046） |
+| `linux` 的 `Start`/`End` | 与 `L` / `last-lba` **完全一致**（本机 10,498,048 / 61,880,314） |
 | `Name` 列 | `userdata` / `linux`（**大小写必须一致**，内核按名字找根分区） |
-| 相邻关系 | `userdata` 的 `End` + 1 = `linux` 的 `Start` |
-| `linux` 的 `Size` | `E − L + 1`，与 [3.5](#35-计算新分区的起止扇区) 算的一致 |
-| 末尾 | `linux` 的 `End` 不大于原 `userdata` 的 `End` |
+| 相邻关系 | `userdata` 的 `End` + 1 = `linux` 的 `Start`（若像本机一样留了对齐空隙，允许差几个扇区，本机差 1 个） |
+| `linux` 的 `Size` | `last-lba − L + 1`，与 [3.5](#35-计算新分区的起止扇区) 算的一致 |
+| 末尾 | `linux` 的 `End` = `last-lba`（本机 61,880,314），**不要超过 `T − 1`** |
 
 ```text
 (parted) quit
@@ -813,21 +978,23 @@ GPT 由 bootloader 读取，这是最可信的来源：
 /usr/bin/fastboot getvar partition-size:userdata
 ```
 
-期望（十六进制，单位是**字节**）：
+期望（十六进制，单位是**字节**；下面按 [3.5](#35-计算新分区的起止扇区) 的算例 1）：
 
 ```text
-partition-size:linux: 0x3321651E00
-partition-size:userdata: 0x800000000
+partition-size:linux: 0x31007FB000
+partition-size:userdata: 0x772FFF000
 ```
 
 把十六进制换算成字节核对（把 `0x…` 换成实际打印的值）：
 
 ```sh
-printf '%d\n' 0x3321651E00
+printf '%d\n' 0x31007FB000      # 210461765632
+printf '%d\n' 0x772FFF000       # 31994146816
 ```
 
-- `linux` 应为 `(E − L + 1) × 512`；上面的例子是 `428913295 × 512 = 219603607040`（`0x3321651E00`）。
-- `userdata` 应为 `(U − S + 1) × 512`；例子是 `67108864 × 512 = 34359738368`（`0x800000000`，正好 32 GiB）。
+- `linux` 应为 `(last-lba − L + 1) × 4096`；本例是 `51382267 × 4096 = 210461765632`（`0x31007FB000`，≈ 196.0 GiB）。
+- `userdata` 应为 `(U − S + 1) × 4096`；本例是 `7811071 × 4096 = 31994146816`（`0x772FFF000`，≈ 29.8 GiB）。
+- **乘的是 4096（本机逻辑扇区），不是 512**：拿 512 乘出来的数会只有 1/8，正好是本项目犯过的错。
 
 对不上就是算错了或抄错了，回 [3.5](#35-计算新分区的起止扇区) 重算；差得离谱时按 [9.7](#97-分区相关故障) 处理。
 
@@ -875,11 +1042,11 @@ printf '%d\n' 0x3321651E00
 此时磁盘上应该是：
 
 - `userdata`：重建为较小分区，内容已不可用（Android 需要重新格式化 data 才能开机）；
-- `linux`：存在、名字正确、大小符合计算；
+- `linux`：存在、名字正确、大小符合计算（全新设备上编号是 35；本机因为多了 ESP，是 36）；
 - `boot_b`：还是空的（或临时装着 recovery，如果你用了 3.3.3）；
-- 其它分区：一个都没动。
+- 其它分区（含 `dtbo_b`）：一个都没动——`dtbo_b` 的擦除在第 4 章才做。
 
-接下来回 fastboot 刷 `boot_b`（第 4 章）和 `linux`（第 5 章）。
+接下来回 fastboot，**先擦 `dtbo_b`、再刷 `boot_b`**（第 4 章），然后刷 `linux`（第 5 章）。
 
 ---
 
@@ -902,15 +1069,35 @@ printf '%d\n' 0x3321651E00
 | CSOT | `/srv/elish/boot.img` | 约 16 MiB（16,789,504 字节，随 Release 变动） |
 | BOE | `/srv/elish/boot-boe-alt.img` | 同上 |
 
-`boot_b` 只有 192 MiB（393216 扇区 = `0xC000000` 字节），正常镜像远小于上限。**刷错面板 = 黑屏**，先按 [0.3](#03-两种面板先确认再下载) 确认型号。
+`boot_b` 只有 192 MiB（`0xC000000` 字节；按 512 B 计价 393,216 个扇区，按 4096 B 计价 49,152 个），正常镜像远小于上限。**刷错面板 = 黑屏**，先按 [0.3](#03-两种面板先确认再下载) 确认型号。
 
-### 4.3 刷入
+> `boot_b` 不在 `/dev/sda` 上，而在 A/B 槽那组 LUN（本机 `/dev/sde`，`boot_b = sde37`）。所以 `parted /dev/block/sda` 里看不到它，只能用 `fastboot getvar partition-size:boot_b` 查。
+
+### 4.3 先擦 `dtbo_b`，再刷入
+
+**顺序：先擦，再刷。少了擦除，`_b` 槽启动会黑屏 / 开不了机。**
 
 ```sh
+# 第一步（必需，一次性）：擦掉 Android 留在 _b 槽的 dtbo overlay
+/usr/bin/fastboot erase dtbo_b
+
+# 第二步：刷内核
 /usr/bin/fastboot flash boot_b /srv/elish/boot.img
 ```
 
-BOE 面板把最后一段换成 `/srv/elish/boot-boe-alt.img`。
+擦除的期望输出形如：
+
+```text
+Erasing 'dtbo_b'                                   OKAY [  0.0xx s]
+Finished. Total time: 0.0xx s
+```
+
+- `dtbo_b` 实测容量 32 MiB（`0x2000000` = 33,554,432 B），擦完是**全零**；
+- 只擦 `dtbo_b`，**不碰 `dtbo_a`**（那是 Android a 槽的 overlay）；
+- 擦除是幂等的：重复执行只是再擦一遍全零区域，没有副作用；
+- 忘了这一步直接刷 `boot_b` → 大概率黑屏 / 开不了机，原因与证据见 [4.5](#45-为什么必须擦-dtbo_b)。
+
+BOE 面板把刷写那行换成 `/srv/elish/boot-boe-alt.img`。
 
 期望输出：
 
@@ -936,6 +1123,22 @@ Finished. Total time: 0.536s
 
 期望 `partition-size:boot_b: 0xC000000`（192 MiB）。
 
+顺带确认 `dtbo_b` 存在且容量对（擦除不改变分区大小）：
+
+```sh
+/usr/bin/fastboot getvar partition-size:dtbo_b
+```
+
+期望 `partition-size:dtbo_b: 0x2000000`（32 MiB）。
+
+设备能启动后，可以再验一次 `dtbo_b` 的内容（Linux 里，只读）：
+
+```sh
+/usr/bin/sudo /usr/bin/dd if=/dev/disk/by-partlabel/dtbo_b bs=4096 count=4 | /usr/bin/hexdump -C
+```
+
+期望 4 个 4 KiB 块全为 `00`（本机实测擦除后就是全零）。`count=4` 只读前 16 KiB，**不会覆盖任何东西**。
+
 **可选：从设备回读比对 SHA256**（最硬的证据，需要系统能启动，见 [7.4](#74-验证清单逐项打勾)）：
 
 ```sh
@@ -951,26 +1154,42 @@ echo $((IMG_BYTES / 4096))          # 得到要读的 4 KiB 块数，例如 4099
 
 结果应与主机上 `/usr/bin/sha256sum /srv/elish/boot.img` 完全一致。原理：`boot.img` 是 4096 的整数倍长度，`count` 取「字节数 ÷ 4096」正好读完整个镜像，不会带上分区尾部的残留。
 
-### 4.5 关于 `dtbo_b`：为什么本教程不擦
+### 4.5 为什么必须擦 `dtbo_b`
 
-上游的 elish 教程（Armbian、postmarketOS wiki）在刷 `boot_b` 之前都要求：
+**结论：`/usr/bin/fastboot erase dtbo_b` 是刷写流程的正式步骤，不是可选例外。不擦，`_b` 槽启动时黑屏 / 开不了机。**
 
-```text
-# 上游 Armbian / postmarketOS wiki 的做法 —— 本教程不执行这条命令
-fastboot erase dtbo_b
+真机上的证据：
+
+1. 本机 `dtbo_b` 实测 **32 MiB（33,554,432 B）全零**：`dd if=/dev/disk/by-partlabel/dtbo_b bs=4096 count=4` 读出的 4 个块全是 0——它已经是擦过的状态；
+2. 不擦 `dtbo_b` 直接刷 `boot_b`，设备从 `_b` 槽启动 → **黑屏 / 进不了系统**（本仓库真机结论）。
+
+机理：
+
+- `_b` 槽启动时，ABL（小米的 bootloader）会读 `dtbo_b`，把里面的 dtbo overlay **叠加到 `boot.img` 自带的 dtb 上**；
+- `dtbo_b` 里如果是 Android 留下的 overlay（来自 Android 的 _b 槽），叠加结果与本项目的 dtb 冲突：面板初始化参数、内存节点被改坏 → 屏幕不亮 / 早期挂死；
+- `boot.img` 里的 dtb 本身没有问题（它是追加在镜像里的，`deviceinfo_append_dtb`）——**问题在于 bootloader 还会额外叠一层**。
+
+与上游的关系：
+
+| 流程 | 是否擦 `dtbo_b` |
+|---|---|
+| Armbian 官方 elish 指南 | **擦**，且是刷写第一步 |
+| postmarketOS wiki | **擦** |
+| 本项目（旧版本文档） | ~~不擦~~ → **擦**（旧结论已被真机推翻，作废） |
+
+旧版本写的「本项目不擦 `dtbo_b`、只在排障时才擦」是**错的**：它不是例外，是必需步骤。本步骤也是本项目**唯一允许的 `erase`**，见 [0.1](#01-写两个分区--擦一个分区)。
+
+影响面与可逆性：
+
+- 只影响 `_b` 槽（Linux）的启动路径；`_a` 槽（Android）读的是 `dtbo_a`，没有动过，Android 照常能起；
+- `dtbo_b` 里没有用户数据，擦除不丢任何东西；
+- 想回到 Android 的原始状态（例如准备 OTA 到 b 槽、或重新上锁），要**刷回原厂 `dtbo_b`**：
+
+```sh
+/usr/bin/fastboot flash dtbo_b /srv/elish/dtbo.img
 ```
 
-本教程**不包含**这条命令，原因有三：
-
-1. 本项目的硬约束是「只允许写 `boot_b` 与 `linux`，任何 `erase` 都不做」；
-2. `boot.img` 内的 dtb 是**追加在镜像里**的（`deviceinfo_append_dtb`），理论上不依赖 `dtbo` 分区；
-3. **技术上的不确定性（如实说明）**：ABL 是否仍会把 b 槽的 Android dtbo overlay 叠加到自带 dtb 上，目前没有一手证据（见 `docs/research/flash-layout.md` 的 U3）。本仓库的测试设备上 `dtbo_b` 早已被清空过，所以「全新、未擦 `dtbo_b` 的设备能否直接启动」**未经验证**。
-
-因此排障顺序是：
-
-1. 首次开机黑屏/早期挂死 → **先按 [9.2](#92-黑屏最需要分清的一种) 排除面板刷错**（这是最常见原因）；
-2. 面板确认无误、仍然黑屏 → `dtbo` 是可疑项之一，按 `docs/decisions.md` 的 D-009 受控流程处理（一次性、显式开关、留痕），**而不是随手 erase**；
-3. 结论与证据请回报到 issue，这一条需要真机数据才能定论。
+  `dtbo.img` 只能从**小米官方 fastboot 包**里取，本项目**不提供**该文件（仓库不分发原厂镜像）。刷官方整包会自己写回 `dtbo_b`，见 [9.9](#99-回到-android)。
 
 ### 4.6 失败处理
 
@@ -980,7 +1199,9 @@ fastboot erase dtbo_b
 | `FAILED (remote: 'not allowed in locked state')` | 未解锁 | 回 [2.1](#21-解锁-bootloader一次性会清空数据) |
 | `Writing 'boot_b' FAILED (remote: …)` | 分区写保护 / 分区名不存在 | 用 `getvar partition-size:boot_b` 确认分区存在；记录完整报错 |
 | `Sending` 阶段就失败 | USB 断连、线材问题 | 换线、换 USB 口，重刷 |
-| 刷完黑屏但 `fastboot devices` 正常 | 面板刷错 | 重刷另一种 `boot.img` |
+| 刷完黑屏但 `fastboot devices` 正常，**且 `dtbo_b` 没擦** | 漏了必需的 `erase dtbo_b` | 先 `fastboot erase dtbo_b` 再重刷 `boot_b`，见 [4.5](#45-为什么必须擦-dtbo_b) |
+| 刷完黑屏但 `fastboot devices` 正常，`dtbo_b` 已擦 | 面板刷错 | 重刷另一种 `boot.img` |
+| `Erasing 'dtbo_b' FAILED (remote: …)` | 分区名/槽位不对，或未解锁 | `getvar partition-size:dtbo_b` 确认存在（期望 `0x2000000`）；回 [2.1](#21-解锁-bootloader一次性会清空数据) 确认已解锁 |
 | `fastboot: error: cannot load '…'` | 路径或文件问题 | 用绝对路径，`ls -l` 确认存在且非 0 字节 |
 
 ---
@@ -1010,8 +1231,10 @@ fastboot erase dtbo_b
 把十六进制换成字节核对（把 `0x…` 换成实际值）：
 
 ```sh
-printf '%d\n' 0x3321651E00
+printf '%d\n' 0x31007FB000      # 210461765632
 ```
+
+本机按 [3.5](#35-计算新分区的起止扇区) 的算例 1 建出来的 `linux` 应是 `0x31007FB000` = 210,461,765,632 B ≈ 196.0 GiB；只要它 ≥ 16 GiB 就能刷。
 
 ### 5.2 刷入
 
@@ -1032,7 +1255,7 @@ Finished. Total time: …
 - 分片数量取决于设备的 `max-download-size`，不一定是 2 片；
 - 耗时：USB 2.0 约 5–15 分钟，USB 3.0 约 1–3 分钟；
 - **全程不要拔线、不要让主机休眠、不要中途 Ctrl-C**；
-- 失败后直接重刷即可：`flash` 是覆盖写，不需要先擦除（本项目也不允许擦除）。
+- 失败后直接重刷即可：`flash` 是覆盖写，不需要先擦除（本项目只允许擦 `dtbo_b` 这一处，`linux` 不擦）。
 
 ### 5.3 切到 b 槽
 
@@ -1355,7 +1578,8 @@ Finished. Total time: …
 
 | 现象 | 最可能原因 | 处理 | 验证 |
 |---|---|---|---|
-| 刷完黑屏，但 `fastboot devices` 能看到 | 面板刷错 | 重刷另一种 `boot.img` | 屏幕点亮 |
+| 刷完黑屏，`fastboot devices` 能看到，且 `dtbo_b` **没擦** | 漏了必需的 `erase dtbo_b`（首要原因） | `fastboot erase dtbo_b` → 重刷 `boot_b` → 重启 | 屏幕点亮 |
+| 刷完黑屏，`fastboot devices` 能看到，`dtbo_b` 已擦 | 面板刷错（首要原因之一） | 重刷另一种 `boot.img` | 屏幕点亮 |
 | 黑屏且 `fastboot devices` 看不到 | 死机/停在 EDL | 长按电源 15 秒，重进 fastboot；仍不行见 [9.8](#98-彻底重来保留-android-a-槽) | `fastboot devices` 有输出 |
 | 卡在小米 logo / 反复重启 | `boot.img` 与设备不匹配 | 重刷 `boot_b` | 能滚内核日志 |
 | 日志停在 `elish-init: … FATAL` | 找不到/挂不上根分区 | 重刷 `linux` | `findmnt /` 正常 |
@@ -1375,14 +1599,19 @@ Finished. Total time: …
 
 ### 9.2 黑屏（最需要分清的一种）
 
-按顺序判断：
+按顺序判断，**第 2、3 条并列为首要原因**：
 
 1. **`fastboot devices` 有设备吗？**
-   - 有 → 设备活着，只是屏幕没亮 → 90% 是面板刷错 → 重刷另一种 `boot.img`（第 4 章）；
+   - 有 → 设备活着，只是屏幕没亮 → 继续第 2 条；
    - 没有 → 长按电源 15 秒强制关机 → 音量下 + 电源 → 再查一次。
-2. **重刷另一种面板后仍黑？** → 看 [4.5](#45-关于-dtbo_b为什么本教程不擦) 的 `dtbo` 说明。
-3. **屏幕亮但只有背光/花屏？** → 驱动起来了但时序不对，同样是 dtb 问题，重刷另一种 `boot.img`。
-4. **完全无反应、充电也没反应？** → 可能进了 EDL（9008），见 [10](#10-已知限制) 的说明（救援未验证）。
+2. **`dtbo_b` 擦了吗？**（首要原因之一）
+   - 没擦 → 漏了刷写前的必需步骤：`/usr/bin/fastboot erase dtbo_b` → 重刷 `boot_b` → 重启；
+   - 不确定 → 直接再擦一次（幂等，无副作用）→ 重刷 `boot_b` → 重启；
+   - 原因与证据见 [4.5](#45-为什么必须擦-dtbo_b)。
+3. **面板型号对了吗？**（首要原因之一）
+   - 不确定/可能是另一种面板 → 重刷另一种 `boot.img`（第 4 章），BOE 用户刷 `boot-boe-alt.img`；
+4. **屏幕亮但只有背光/花屏？** → 驱动起来了但时序不对，同样是 dtb 问题：先确认第 2 条（`dtbo_b`），再重刷另一种面板镜像。
+5. **完全无反应、充电也没反应？** → 可能进了 EDL（9008），见 [10](#10-已知限制) 的说明（救援未验证）。
 
 ### 9.3 卡开机 / 反复重启
 
@@ -1484,10 +1713,11 @@ with the current setting?
 
 ### 9.8 彻底重来（保留 Android a 槽）
 
-按顺序，只碰两个分区：
+按顺序，只碰两个分区（外加一次必需的 `dtbo_b` 擦除）：
 
 ```sh
 /usr/bin/fastboot devices
+/usr/bin/fastboot erase dtbo_b                 # 必需，一次性
 /usr/bin/fastboot flash boot_b /srv/elish/boot.img
 /usr/bin/fastboot flash linux /srv/elish/linux-rootfs-f2fs.img
 /usr/bin/fastboot --set-active=b
@@ -1508,7 +1738,18 @@ with the current setting?
 | 彻底恢复单系统 | 刷小米官方 fastboot 包 | **会写全部分区，`linux` 分区被覆盖，Linux 数据全丢** |
 | 保留 Linux，只把空间还给 Android | 见 [docs/partitioning.md](docs/partitioning.md) 第 9 节 | 需要删掉并重建分区，Linux 数据全丢 |
 
-刷官方包属于「放弃 Linux」的路径，与本项目「只写两个分区」的约束冲突，本教程不提供具体命令。**刷之前先把 `linux` 分区里要留的东西拷出来。**
+刷官方包属于「放弃 Linux」的路径，与本项目「只写两个分区 + 擦一次 `dtbo_b`」的约束冲突，本教程不提供具体命令。**刷之前先把 `linux` 分区里要留的东西拷出来。**
+
+**把 `dtbo_b` 刷回原厂**：本项目在装机时擦掉了 `dtbo_b`。如果之后还要用 `_b` 槽（例如 OTA 到 b 槽、或把设备恢复成接近出厂的状态），需要写回原厂 dtbo：
+
+```sh
+/usr/bin/fastboot flash dtbo_b /srv/elish/dtbo.img    # 从官方 fastboot 包取
+/usr/bin/fastboot getvar partition-size:dtbo_b        # 期望 0x2000000（32 MiB）
+```
+
+- 目标「彻底恢复单系统」（刷官方整包）会自己写回 `dtbo_b`，不需要单独做；
+- 目标「只想让 Android 能开机」不需要刷回：Android 从 `_a` 槽启动，读的是 `dtbo_a`；
+- 本项目**不提供** `dtbo.img`（仓库不跟踪、不分发原厂二进制），只能从官方包里取。
 
 ---
 
@@ -1543,11 +1784,13 @@ with the current setting?
 
 | 限制 | 说明 |
 |---|---|
-| 只能写 `boot_b` 与 `linux` | 任何其它分区的 `flash`/`erase` 都不在支持范围内 |
+| 只能写 `boot_b` 与 `linux`，另加一次必需的 `dtbo_b` 擦除 | 除这三项外的任何 `flash`/`erase` 都不在支持范围内；`dtbo_b` 只允许 `erase`（回滚时写回原厂 `dtbo.img` 除外） |
+| `dtbo_b` 必须先擦（真机已验证） | 不擦则 `_b` 槽启动黑屏/开不了机；擦除只影响 Linux 启动路径，见 [4.5](#45-为什么必须擦-dtbo_b) |
+| 没有 recovery 分区 | 只能 `fastboot boot <recovery.img>` 临时进入，不写任何分区、重启即失效，见 [3.3.1](#331-取得-recovery-镜像) |
 | 不能在线调整 `linux` 分区大小 | 要 `rm` + `mkpart`，等于重刷 rootfs |
 | 缩 `userdata` 后 Android 需重新格式化 data | 这是分区重建的必然结果 |
 | 不与 Android 共用同一份 `userdata` | Linux 独占磁盘尾部空间 |
-| `dtbo_b` 是否必须清空未验证 | 见 [4.5](#45-关于-dtbo_b为什么本教程不擦) |
+| `dtbo_b` 不擦就一定开不了机（真机已验证） | 见 [4.5](#45-为什么必须擦-dtbo_b)；擦除是装机必需步骤，不是排障选项 |
 | EDL（9008）救援未验证 | 分区表彻底写坏可能无法恢复 |
 | BOE 面板产物未真机验证 | 见 [0.3](#03-两种面板先确认再下载) |
 | 没有系统内的「重装」入口 | 恢复只能靠 fastboot |
@@ -1562,12 +1805,17 @@ with the current setting?
 | 看解锁状态 | `/usr/bin/fastboot getvar unlocked` |
 | 看当前槽位 | `/usr/bin/fastboot getvar current-slot` |
 | 看 `boot_b` 容量 | `/usr/bin/fastboot getvar partition-size:boot_b`（期望 `0xC000000`） |
+| 看 `dtbo_b` 容量 | `/usr/bin/fastboot getvar partition-size:dtbo_b`（期望 `0x2000000`） |
 | 看 `linux` 容量 | `/usr/bin/fastboot getvar partition-size:linux` |
+| **擦 `dtbo_b`（必需）** | `/usr/bin/fastboot erase dtbo_b`（刷 `boot_b` 之前） |
 | 刷内核 | `/usr/bin/fastboot flash boot_b /srv/elish/boot.img` |
 | 刷 rootfs | `/usr/bin/fastboot flash linux /srv/elish/linux-rootfs-f2fs.img` |
+| 回 Android 前刷回原厂 `dtbo_b` | `/usr/bin/fastboot flash dtbo_b /srv/elish/dtbo.img`（文件从官方 fastboot 包取） |
 | 切槽 | `/usr/bin/fastboot --set-active=b` |
 | 重启 | `/usr/bin/fastboot reboot` |
 | 看分区表（recovery） | `/usr/bin/adb shell "/cache/parted /dev/block/sda unit s print"` |
+| 看扇区大小（设备逻辑，**设备上**） | `/usr/bin/blockdev --getss /dev/sda`（本机 4096；**不要**拿 `--getsz` 当扇区号） |
+| 看 GPT 扇区号（**设备上**） | `/usr/bin/sfdisk -d /dev/sda`（`unit: sectors` = 4096 B 扇区，总扇区 61,880,320） |
 | 进 recovery | `/usr/bin/fastboot boot /srv/elish/recovery.img` |
 | 从 recovery 回 fastboot | `/usr/bin/adb reboot bootloader` |
 | 校验下载 | `cd /srv/elish && /usr/bin/sha256sum -c /srv/elish/SHA256SUMS.txt` |
@@ -1592,8 +1840,8 @@ with the current setting?
 
 | 步骤 | Armbian 官方流程 | 本教程 | 原因 |
 |---|---|---|---|
-| 分区方式 | `resizepart` 缩 `userdata`，再 `mkpart linux` + 额外建一个 `esp` | `rm` 掉旧 `userdata`，重建较小 `userdata` + `mkpart linux`，**不建 `esp`** | `rm` + `mkpart` 不依赖文件系统当前状态；`esp` 不在本项目白名单里，永远不写 |
-| `erase dtbo_b` | 有，且是第一步 | **没有** | 硬约束：除 `boot_b`/`linux` 外不做任何写与擦除；见 [4.5](#45-关于-dtbo_b为什么本教程不擦) |
+| 分区方式 | `resizepart` 缩 `userdata`，再 `mkpart linux` + 额外建一个 `esp` | `rm` 掉旧 `userdata`，重建较小 `userdata` + `mkpart linux`，**不建 `esp`** | `rm` + `mkpart` 不依赖文件系统当前状态；`esp` 不在本项目白名单里，永远不写（本机 `sda35` 那个 ESP 是历史遗留，不是本教程建的） |
+| `erase dtbo_b` | 有，且是第一步 | **有，且是必需步骤（刷 `boot_b` 之前）** | **与上游一致**：`_b` 槽启动时 ABL 会读 `dtbo_b`，Android 的 overlay 与本项目 dtb 冲突会黑屏/开不了机（真机实测）；见 [4.5](#45-为什么必须擦-dtbo_b) |
 | 刷入顺序 | 先 `flash linux`，再 `flash boot_b` | 先 `flash boot_b`，再 `flash linux` | 顺序不影响结果；先刷小的 `boot_b` 能更早发现设备问题 |
 | 切槽 | `fastboot set_active b` | `fastboot --set-active=b` | 等价写法；本教程统一用选项形式 |
 | 首次登录 | USB 网络 + `ssh root@172.16.42.1`（默认 `root/1234`） | 本地 tty 自动登录 `magma`，口令见 Release 说明 | 不需要额外网络配置；首登后必须改口令 |
